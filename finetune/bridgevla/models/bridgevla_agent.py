@@ -28,6 +28,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "..."))
 import RLBench.utils.peract_utils_rlbench as rlbench_utils
 import GemBench.utils.peract_utils_gembench as gembench_utils
+import Real.utils.peract_utils as real_utils
 import bridgevla.mvt.utils as mvt_utils
 import bridgevla.utils.rvt_utils as rvt_utils
 from bridgevla.mvt.augmentation import apply_se3_aug_con, aug_utils
@@ -993,6 +994,371 @@ class RVTAgent:
             return_out.update(loss_log)
 
         return return_out
+
+
+    def update_real(
+        self,
+        replay_sample: dict,
+        backprop: bool = True,
+        eval_log: bool = False,
+        reset_log: bool = False,
+        cameras=["3rd","wrist"],
+    ) -> dict:
+        # assert replay_sample["ignore_collisions"].shape[1:] == (1, 1)
+        # assert replay_sample["gripper_pose"].shape[1:] == (1, 7)
+        # assert replay_sample["low_dim_state"].shape[1:] == (
+        #     1,
+        #     self._net_mod.proprio_dim,
+        # )
+
+        # sample
+        # action_rot_grip = replay_sample["rot_grip_action_indicies"][
+        #     :, -1
+        # ].int()  # (b, 4) of int
+
+
+
+        action_ignore_collisions = replay_sample["ignore_collisions"].unsqueeze(1).int()  # (b, 1) of int
+        action_gripper_pose = replay_sample["gripper_pose"]  # (b, 8)    对于quat 要求输入格式是 x y z w 但我们采集的真机数据是 w x y z
+        
+
+        action_trans_con = action_gripper_pose[:, 0:3]  # (b, 3) 
+        # rotation in quaternion xyzw
+        action_rot = action_gripper_pose[:, 3:7]  # (b, 4) 
+        # print("before shape",action_rot.shape)
+        # print("before first element",action_rot[0])
+
+        # print("after shape",action_rot.shape)
+        # print("after first element",action_rot[0])
+
+        action_grip = action_gripper_pose[:, -1].int()   # (b,)
+        # tasks = replay_sample["tasks"]
+        # self._net_mod.tasks = tasks
+        # self._net_mod.renderer.tasks = tasks
+        # proprio = replay_sample["low_dim_state"]  # (b, 4) 
+        # if isinstance(self._network, DistributedDataParallel):
+        #     if self._network.module.add_proprio:
+        #         pass
+        #         assert False
+        #         # print("proprio is used !!!!")
+        #     else:
+        #         proprio = None
+        # else:
+        #     if self._network.add_proprio:
+        #         pass
+        #         assert False
+        #         # print("proprio is used !!!!")
+        #     else:
+        #         proprio = None
+        return_out = {}
+
+        obs, pcd = real_utils._preprocess_inputs_real(replay_sample, cameras)
+        
+        with torch.no_grad():
+            pc, img_feat = rvt_utils.get_pc_img_feat(
+                obs,
+                pcd,
+            )
+            
+            # 确保数据类型一致
+            pc = pc.float()
+            img_feat = img_feat.float()
+
+
+            import open3d as o3d
+            def vis_pcd(pc, rgb,save_path):
+
+                # 将点云和颜色转换为二维的形状 (N, 3)
+                # pcd_flat = pcd.reshape(-1, 3)  # (200 * 200, 3)
+                # rgb_flat = rgb.reshape(-1, 3) / 255.0  # (200 * 200, 3)
+
+                # 将点云和颜色信息保存为 PLY 文件
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(pc)  # 设置点云位置
+                pcd.colors = o3d.utility.Vector3dVector(rgb)  # 设置对应的颜色
+                o3d.io.write_point_cloud(save_path, pcd)
+                # o3d.visualization.draw_geometries([pcd])
+            # vis_pcd(pc[0].cpu().numpy(),img_feat[0].cpu().numpy(),"/mnt/data1/3D_VLA/BridgeVLA/rvt_our/test_ori.ply")
+            if self._transform_augmentation and backprop:
+                # print("------ apply_se3_aug_con")
+                action_trans_con, action_rot, pc = apply_se3_aug_con(
+                    pcd=pc,
+                    action_gripper_pose=action_gripper_pose,
+                    bounds=torch.tensor(self.scene_bounds),
+                    trans_aug_range=self._transform_augmentation_xyz.clone().detach(),
+                    rot_aug_range=torch.tensor(self._transform_augmentation_rpy),
+                )
+                action_trans_con = torch.tensor(action_trans_con).to(pc.device)
+                action_rot = torch.tensor(action_rot).to(pc.device)
+            
+            # TODO: vectorize
+            
+            action_rot = action_rot.cpu().numpy()
+            for i, _action_rot in enumerate(action_rot):
+                _action_rot = aug_utils.normalize_quaternion(_action_rot)
+                if _action_rot[-1] < 0:
+                    _action_rot = -_action_rot
+                action_rot[i] = _action_rot
+
+            pc, img_feat = rvt_utils.move_pc_in_bound(
+                pc, img_feat, self.scene_bounds, no_op=not self.move_pc_in_bound
+            )
+            # vis_pcd(pc[0].cpu().numpy(),img_feat[0].cpu().numpy(),"/mnt/data1/3D_VLA/BridgeVLA/rvt_our/test_ori.ply")
+            
+            wpt = [x[:3] for x in action_trans_con]
+
+            wpt_local = []
+            rev_trans = []
+            for _pc, _wpt in zip(pc, wpt):
+                a, b = mvt_utils.place_pc_in_cube(
+                    _pc,
+                    _wpt,
+                    with_mean_or_bounds=self._place_with_mean,
+                    scene_bounds=None if self._place_with_mean else self.scene_bounds,
+                )
+                wpt_local.append(a.unsqueeze(0))
+                rev_trans.append(b)
+
+            wpt_local = torch.cat(wpt_local, axis=0)
+
+            # TODO: Vectorize
+            pc = [
+                mvt_utils.place_pc_in_cube(
+                    _pc,
+                    with_mean_or_bounds=self._place_with_mean,
+                    scene_bounds=None if self._place_with_mean else self.scene_bounds,
+                )[0]
+                for _pc in pc
+            ]
+            # import pdb;pdb.set_trace()
+            # vis_pcd(pc[0].cpu().numpy(),img_feat[0].cpu().numpy(),"/mnt/data1/3D_VLA/BridgeVLA/rvt_our/test_ori.ply")
+            bs = len(pc)
+            nc = self._net_mod.num_img
+            h = w = self._net_mod.img_size
+
+            if backprop and (self.img_aug != 0):
+                img_aug = self.img_aug
+            else:
+                img_aug = 0
+
+            dyn_cam_info = None
+
+        (
+            action_rot_x_one_hot,
+            action_rot_y_one_hot,
+            action_rot_z_one_hot,
+            action_grip_one_hot,  # (bs, 2)
+            action_collision_one_hot,  # (bs, 2)
+        ) = self._get_one_hot_expert_actions(
+            bs, action_rot, action_grip, action_ignore_collisions, device=self._device
+        )
+
+        if self.rot_ver == 1:
+            rot_x_y = torch.cat(
+                [
+                    action_rot_x_one_hot.argmax(dim=-1, keepdim=True),
+                    action_rot_y_one_hot.argmax(dim=-1, keepdim=True),
+                ],
+                dim=-1,
+            )
+            if self.rot_x_y_aug != 0:
+                # add random interger between -rot_x_y_aug and rot_x_y_aug to rot_x_y
+                rot_x_y += torch.randint(
+                    -self.rot_x_y_aug, self.rot_x_y_aug, size=rot_x_y.shape
+                ).to(rot_x_y.device)
+                rot_x_y %= self._num_rotation_classes
+        
+        wpt_local = wpt_local.float()
+        
+        out = self._network(
+            pc=pc,
+            img_feat=img_feat,
+            # proprio=proprio,
+            # lang_emb=lang_goal_embs,
+            lang_emb=None,
+            img_aug=img_aug,
+            wpt_local=wpt_local if self._network.training else None,
+            rot_x_y=rot_x_y if self.rot_ver == 1 else None,
+            language_goal=replay_sample["lang_goal"]  
+        )
+        mvt1_img=out["mvt1_ori_img"][0,:,3:6]
+        # visualize mvt1_img
+        # visualize_images_2(mvt1_img,mvt1_img,save_dir="/mnt/data1/3D_VLA/BridgeVLA/rvt_our/test_ori.png")
+        q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
+            out, dims=(bs, nc, h, w)
+        )
+        # for key,item in out.items():
+        #     if key != 'rev_trans' and key != 'mvt2':
+        #         print(key,item.dtype)
+        #     if key == 'mvt2':
+        #         for _key,_item in item.items():
+        #             print(_key,_item.dtype)
+
+
+
+        action_trans = self.get_action_trans(
+            wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
+        )
+
+        loss_log = {}
+        if backprop:
+            # 计算损失
+            # cross-entropy loss
+            trans_loss = self._cross_entropy_loss(q_trans, action_trans).mean()   #  软标签交叉熵损失，target与输入的形状相同，且不再采用one-hot编码，而是用一个class probabilities来表示
+            rot_loss_x = rot_loss_y = rot_loss_z = 0.0
+            grip_loss = 0.0
+            collision_loss = 0.0
+            if self.add_rgc_loss:
+                
+                rot_loss_x = self._cross_entropy_loss(
+                    rot_q[
+                        :,
+                        0 * self._num_rotation_classes : 1 * self._num_rotation_classes,
+                    ],
+                    action_rot_x_one_hot.argmax(-1),
+                ).mean()
+
+                rot_loss_y = self._cross_entropy_loss(
+                    rot_q[
+                        :,
+                        1 * self._num_rotation_classes : 2 * self._num_rotation_classes,
+                    ],
+                    action_rot_y_one_hot.argmax(-1),
+                ).mean()
+
+                rot_loss_z = self._cross_entropy_loss(
+                    rot_q[
+                        :,
+                        2 * self._num_rotation_classes : 3 * self._num_rotation_classes,
+                    ],
+                    action_rot_z_one_hot.argmax(-1),
+                ).mean()
+                
+                grip_loss = self._cross_entropy_loss(
+                    grip_q,
+                    action_grip_one_hot.argmax(-1),
+                ).mean()
+                
+                collision_loss = self._cross_entropy_loss(
+                    collision_q, action_collision_one_hot.argmax(-1)
+                ).mean()
+
+            total_loss = (
+                trans_loss
+                + rot_loss_x
+                + rot_loss_y
+                + rot_loss_z
+                + grip_loss
+                + collision_loss
+            )
+            # total_loss=trans_loss
+
+
+            # check update
+            # 初始化权重
+            # layer_name = "mvt1.feat_fc_x.0"
+            # initial_weights = dict(self._net_mod.named_modules())[layer_name].weight.data.clone()
+            # for param in dict(self._net_mod.named_modules())[layer_name].parameters():
+            #     param.requires_grad = False  # 禁止 conv1 层的梯度计算
+            # 优化器步骤
+            self._optimizer.zero_grad(set_to_none=True)
+            # total_loss=total_loss.float()
+            
+            total_loss.backward()  # 标准精度下的反向传播
+            # 存储优化前的参数值
+            # before_params = {name: param.detach().clone() for name, param in self._network.named_parameters()}
+            self._optimizer.step()
+            # for name, param in self._network.named_parameters():
+            #     if "language_model" in name :
+            #         if torch.equal(before_params[name], param.detach()):
+            #             print(f"{name} did not change.")
+            #             continue
+            #         else:
+            #             # print(f"{name} was updated.")
+            #             pass
+            # if self.use_scheduler:
+            #     self._lr_sched.step()
+            # self.check_if_params_updated(self._net_mod,layer_name, initial_weights)
+
+
+            loss_log = {
+                "total_loss": total_loss.item(),
+                "trans_loss": trans_loss.item(),
+                "rot_loss_x": rot_loss_x.item(),
+                "rot_loss_y": rot_loss_y.item(),
+                "rot_loss_z": rot_loss_z.item(),
+                "grip_loss": grip_loss.item(),
+                "collision_loss": collision_loss.item(),
+                "lr": self._optimizer.param_groups[0]["lr"],
+            }
+            manage_loss_log(self, loss_log, reset_log=reset_log)
+            return_out.update(loss_log)
+
+        # 当backprop=False且eval_log=True时，计算损失但不进行反向传播
+        if not backprop and eval_log:
+            with torch.no_grad():
+                # 计算损失
+                trans_loss = self._cross_entropy_loss(q_trans, action_trans).mean()
+                rot_loss_x = rot_loss_y = rot_loss_z = 0.0
+                grip_loss = 0.0
+                collision_loss = 0.0
+                if self.add_rgc_loss:
+                    
+                    rot_loss_x = self._cross_entropy_loss(
+                        rot_q[
+                            :,
+                            0 * self._num_rotation_classes : 1 * self._num_rotation_classes,
+                        ],
+                        action_rot_x_one_hot.argmax(-1),
+                    ).mean()
+
+                    rot_loss_y = self._cross_entropy_loss(
+                        rot_q[
+                            :,
+                            1 * self._num_rotation_classes : 2 * self._num_rotation_classes,
+                        ],
+                        action_rot_y_one_hot.argmax(-1),
+                    ).mean()
+
+                    rot_loss_z = self._cross_entropy_loss(
+                        rot_q[
+                            :,
+                            2 * self._num_rotation_classes : 3 * self._num_rotation_classes,
+                        ],
+                        action_rot_z_one_hot.argmax(-1),
+                    ).mean()
+                    
+                    grip_loss = self._cross_entropy_loss(
+                        grip_q,
+                        action_grip_one_hot.argmax(-1),
+                    ).mean()
+                    
+                    collision_loss = self._cross_entropy_loss(
+                        collision_q, action_collision_one_hot.argmax(-1)
+                    ).mean()
+
+                total_loss = (
+                    trans_loss
+                    + rot_loss_x
+                    + rot_loss_y
+                    + rot_loss_z
+                    + grip_loss
+                    + collision_loss
+                )
+
+                eval_loss_log = {
+                    "eval_total_loss": total_loss.item(),
+                    "eval_trans_loss": trans_loss.item(),
+                    "eval_rot_loss_x": rot_loss_x.item(),
+                    "eval_rot_loss_y": rot_loss_y.item(),
+                    "eval_rot_loss_z": rot_loss_z.item(),
+                    "eval_grip_loss": grip_loss.item(),
+                    "eval_collision_loss": collision_loss.item(),
+                }
+                return_out.update(eval_loss_log)
+
+        return return_out
+
 
 
     @torch.no_grad()

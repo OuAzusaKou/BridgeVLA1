@@ -1,0 +1,6 @@
+setup.py
+genrobo3d/__init__.py
+genrobo3d.egg-info/PKG-INFO
+genrobo3d.egg-info/SOURCES.txt
+genrobo3d.egg-info/dependency_links.txt
+genrobo3d.egg-info/top_level.txt

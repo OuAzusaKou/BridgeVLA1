@@ -1,0 +1,9 @@
+Metadata-Version: 2.2
+Name: genrobo3d
+Version: 0.1.1
+Summary: Generalizable robotic manipulation with VLLMs
+Author: Shizhe Chen
+Author-email: cshizhe@gmail.com
+Dynamic: author
+Dynamic: author-email
+Dynamic: summary
