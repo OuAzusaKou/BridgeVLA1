@@ -473,6 +473,7 @@ class RVTAgent:
         action_grip,
         action_ignore_collisions,
         device,
+        action_arm_flag=None,
     ):
         """_get_one_hot_expert_actions.
 
@@ -498,6 +499,9 @@ class RVTAgent:
         action_grip_one_hot = torch.zeros((bs, 2), dtype=int, device=device)
         action_collision_one_hot = torch.zeros((bs, 2), dtype=int, device=device)
 
+        if action_arm_flag is not None:
+            action_arm_flag_one_hot = torch.zeros((bs, 2), dtype=int, device=device)
+
         # fill one-hots
         for b in range(bs):
             gt_rot = action_rot[b]
@@ -516,13 +520,26 @@ class RVTAgent:
             gt_ignore_collisions = action_ignore_collisions[b, :]
             action_collision_one_hot[b, gt_ignore_collisions[0]] = 1
 
-        return (
-            action_rot_x_one_hot,
-            action_rot_y_one_hot,
-            action_rot_z_one_hot,
-            action_grip_one_hot,
-            action_collision_one_hot,
-        )
+            if action_arm_flag is not None:
+                gt_flag = action_arm_flag[b]
+                action_arm_flag_one_hot[b, gt_flag] = 1
+
+        if action_arm_flag is not None:
+            return (
+                action_rot_x_one_hot,
+                action_rot_y_one_hot,
+                action_rot_z_one_hot,
+                action_grip_one_hot,
+                action_collision_one_hot,
+            )
+        else:
+            return (
+                action_rot_x_one_hot,
+                action_rot_y_one_hot,
+                action_rot_z_one_hot,
+                action_grip_one_hot,
+                action_collision_one_hot,
+            )
 
 
     def get_q(self, out, dims, only_pred=False, get_q_trans=True):
@@ -558,24 +575,34 @@ class RVTAgent:
                 out = out["mvt2"]
 
         if self.rot_ver == 0:
-            # (bs, 218)
-            rot_q = out["feat"].view(bs, -1)[:, 0 : self.num_all_rot]
-            grip_q = out["feat"].view(bs, -1)[:, self.num_all_rot : self.num_all_rot + 2]
-            # (bs, 2)
-            collision_q = out["feat"].view(bs, -1)[
-                :, self.num_all_rot + 2 : self.num_all_rot + 4
-            ]
+            # (bs, 218) or (bs, 219) if output_arm_flag is True
+            feat = out["feat"].view(bs, -1)
+            if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                # Last dimension is arm_flag
+                rot_q = feat[:, 0 : self.num_all_rot]
+                grip_q = feat[:, self.num_all_rot : self.num_all_rot + 2]
+                collision_q = feat[:, self.num_all_rot + 2 : self.num_all_rot + 4]
+                arm_flag = feat[:, -1:]  # (bs, 1)
+            else:
+                rot_q = feat[:, 0 : self.num_all_rot]
+                grip_q = feat[:, self.num_all_rot : self.num_all_rot + 2]
+                collision_q = feat[:, self.num_all_rot + 2 : self.num_all_rot + 4]
+                arm_flag = None
         elif self.rot_ver == 1:
             rot_q = torch.cat((out["feat_x"], out["feat_y"], out["feat_z"]),
                               dim=-1).view(bs, -1)
             grip_q = out["feat_ex_rot"].view(bs, -1)[:, :2]
             collision_q = out["feat_ex_rot"].view(bs, -1)[:, 2:]
+            arm_flag = None
         else:
             assert False
 
         y_q = None
-
-        return q_trans, rot_q, grip_q, collision_q, y_q, pts
+        
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+            return q_trans, rot_q, grip_q, collision_q, y_q, pts, arm_flag
+        else:   
+            return q_trans, rot_q, grip_q, collision_q, y_q, pts
 
 
 
@@ -706,9 +733,14 @@ class RVTAgent:
             language_goal=replay_sample["lang_goal"]  
         )
         
-        q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
-            out, dims=(bs, nc, h, w)
-        )
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag: 
+            q_trans, rot_q, grip_q, collision_q, y_q, pts, arm_flag = self.get_q(
+                out, dims=(bs, nc, h, w)
+            )
+        else:
+            q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
+                out, dims=(bs, nc, h, w)
+            )
 
         action_trans = self.get_action_trans(
             wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
@@ -918,9 +950,14 @@ class RVTAgent:
             language_goal=replay_sample["lang_goal"]  
         )
         
-        q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
-            out, dims=(bs, nc, h, w)
-        )
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+            q_trans, rot_q, grip_q, collision_q, y_q, pts, arm_flag = self.get_q(
+                out, dims=(bs, nc, h, w)
+            )
+        else:
+            q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
+                out, dims=(bs, nc, h, w)
+            )
 
         action_trans = self.get_action_trans(
             wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
@@ -1020,7 +1057,9 @@ class RVTAgent:
 
         action_ignore_collisions = replay_sample["ignore_collisions"].unsqueeze(1).int()  # (b, 1) of int
         action_gripper_pose = replay_sample["gripper_pose"]  # (b, 8)    对于quat 要求输入格式是 x y z w 但我们采集的真机数据是 w x y z
-        
+
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+            action_arm_flag = replay_sample["arm_flag"]  # (b, 1) of int
 
         action_trans_con = action_gripper_pose[:, 0:3]  # (b, 3) 
         # rotation in quaternion xyzw
@@ -1142,16 +1181,27 @@ class RVTAgent:
                 img_aug = 0
 
             dyn_cam_info = None
-
-        (
-            action_rot_x_one_hot,
-            action_rot_y_one_hot,
-            action_rot_z_one_hot,
-            action_grip_one_hot,  # (bs, 2)
-            action_collision_one_hot,  # (bs, 2)
-        ) = self._get_one_hot_expert_actions(
-            bs, action_rot, action_grip, action_ignore_collisions, device=self._device
-        )
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+            (
+                action_rot_x_one_hot,
+                action_rot_y_one_hot,
+                action_rot_z_one_hot,
+                action_grip_one_hot,  # (bs, 2)
+                action_collision_one_hot,  # (bs, 2)
+                action_arm_flag_one_hot,  # (bs, 2)
+            ) = self._get_one_hot_expert_actions(
+                bs, action_rot, action_grip, action_ignore_collisions, device=self._device,action_arm_flag=action_arm_flag
+            )
+        else:
+            (
+                action_rot_x_one_hot,
+                action_rot_y_one_hot,
+                action_rot_z_one_hot,
+                action_grip_one_hot,  # (bs, 2)
+                action_collision_one_hot,  # (bs, 2)
+            ) = self._get_one_hot_expert_actions(
+                bs, action_rot, action_grip, action_ignore_collisions, device=self._device
+            )
 
         if self.rot_ver == 1:
             rot_x_y = torch.cat(
@@ -1184,9 +1234,14 @@ class RVTAgent:
         mvt1_img=out["mvt1_ori_img"][0,:,3:6]
         # visualize mvt1_img
         # visualize_images_2(mvt1_img,mvt1_img,save_dir="/mnt/data1/3D_VLA/BridgeVLA/rvt_our/test_ori.png")
-        q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
-            out, dims=(bs, nc, h, w)
-        )
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+            q_trans, rot_q, grip_q, collision_q, y_q, pts, arm_flag_q = self.get_q(
+                out, dims=(bs, nc, h, w)
+            )
+        else:
+            q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
+                out, dims=(bs, nc, h, w)
+            )
         # for key,item in out.items():
         #     if key != 'rev_trans' and key != 'mvt2':
         #         print(key,item.dtype)
@@ -1243,14 +1298,31 @@ class RVTAgent:
                     collision_q, action_collision_one_hot.argmax(-1)
                 ).mean()
 
-            total_loss = (
-                trans_loss
-                + rot_loss_x
-                + rot_loss_y
-                + rot_loss_z
-                + grip_loss
-                + collision_loss
-            )
+                if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                    arm_flag_loss = self._cross_entropy_loss(
+                        arm_flag_q,
+                        action_arm_flag_one_hot.argmax(-1),
+                            ).mean()
+            
+            if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                total_loss = (
+                    trans_loss
+                    + rot_loss_x
+                    + rot_loss_y
+                    + rot_loss_z
+                    + grip_loss
+                    + collision_loss
+                    + arm_flag_loss
+                )
+            else:
+                total_loss = (
+                    trans_loss
+                    + rot_loss_x
+                    + rot_loss_y
+                    + rot_loss_z
+                    + grip_loss
+                    + collision_loss
+                )
             # total_loss=trans_loss
 
 
@@ -1280,20 +1352,32 @@ class RVTAgent:
             #     self._lr_sched.step()
             # self.check_if_params_updated(self._net_mod,layer_name, initial_weights)
 
-
-            loss_log = {
-                "total_loss": total_loss.item(),
-                "trans_loss": trans_loss.item(),
-                "rot_loss_x": rot_loss_x.item(),
-                "rot_loss_y": rot_loss_y.item(),
-                "rot_loss_z": rot_loss_z.item(),
-                "grip_loss": grip_loss.item(),
-                "collision_loss": collision_loss.item(),
-                "lr": self._optimizer.param_groups[0]["lr"],
-            }
+            if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                loss_log = {
+                    "total_loss": total_loss.item(),
+                    "trans_loss": trans_loss.item(),
+                    "rot_loss_x": rot_loss_x.item(),
+                    "rot_loss_y": rot_loss_y.item(),
+                    "rot_loss_z": rot_loss_z.item(),
+                    "grip_loss": grip_loss.item(),
+                    "collision_loss": collision_loss.item(),
+                    "arm_flag_loss": arm_flag_loss.item(),
+                    "lr": self._optimizer.param_groups[0]["lr"],
+                }
+            else:
+                loss_log = {
+                    "total_loss": total_loss.item(),
+                    "trans_loss": trans_loss.item(),
+                    "rot_loss_x": rot_loss_x.item(),
+                    "rot_loss_y": rot_loss_y.item(),
+                    "rot_loss_z": rot_loss_z.item(),
+                    "grip_loss": grip_loss.item(),
+                    "collision_loss": collision_loss.item(),
+                    "lr": self._optimizer.param_groups[0]["lr"],
+                }
             manage_loss_log(self, loss_log, reset_log=reset_log)
             return_out.update(loss_log)
-
+        # to do: eval loss flag
         # 当backprop=False且eval_log=True时，计算损失但不进行反向传播
         if not backprop and eval_log:
             with torch.no_grad():
@@ -1337,14 +1421,31 @@ class RVTAgent:
                         collision_q, action_collision_one_hot.argmax(-1)
                     ).mean()
 
-                total_loss = (
-                    trans_loss
-                    + rot_loss_x
-                    + rot_loss_y
-                    + rot_loss_z
-                    + grip_loss
-                    + collision_loss
-                )
+                    if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                        arm_flag_loss = self._cross_entropy_loss(
+                            arm_flag_q,
+                            action_arm_flag_one_hot.argmax(-1),
+                                ).mean()
+
+                if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                    total_loss = (
+                        trans_loss
+                        + rot_loss_x
+                        + rot_loss_y
+                        + rot_loss_z
+                        + grip_loss
+                        + collision_loss
+                        + arm_flag_loss
+                    )
+                else:
+                    total_loss = (
+                        trans_loss
+                        + rot_loss_x
+                        + rot_loss_y
+                        + rot_loss_z
+                        + grip_loss
+                        + collision_loss
+                    )
 
                 eval_loss_log = {
                     "eval_total_loss": total_loss.item(),
@@ -1355,6 +1456,10 @@ class RVTAgent:
                     "eval_grip_loss": grip_loss.item(),
                     "eval_collision_loss": collision_loss.item(),
                 }
+
+                if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                    eval_loss_log["eval_arm_flag_loss"] = arm_flag_loss.item()
+                    
                 return_out.update(eval_loss_log)
 
         return return_out

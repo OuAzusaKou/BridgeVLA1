@@ -62,6 +62,7 @@ class MVT(nn.Module):
         renderer_device,
         load_pretrain=False,
         pretrain_path=None,
+        output_arm_flag=False,
     ):
         super().__init__()
 
@@ -86,6 +87,7 @@ class MVT(nn.Module):
         self.st_wpt_loc_aug = st_wpt_loc_aug
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
+        self.output_arm_flag = output_arm_flag
 
         # for verifying the input
         self.feat_ver = feat_ver
@@ -102,6 +104,7 @@ class MVT(nn.Module):
         self.mvt1 = MVTSingle(
             **args,
             renderer=self.renderer,
+            # output_arm_flag=self.output_arm_flag
         )  # we have merged mvt1 and mvt2
 
 

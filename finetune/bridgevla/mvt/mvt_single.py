@@ -61,6 +61,7 @@ class MVT(nn.Module):
         no_feat=False,
         load_pretrain=False,
         pretrain_path=None,
+        output_arm_flag=False,
     ):
         super().__init__()
         self.depth = depth
@@ -85,6 +86,7 @@ class MVT(nn.Module):
         self.rot_ver = rot_ver
         self.num_rot = num_rot
         self.no_feat = no_feat
+        self.output_arm_flag = output_arm_flag
 
         if self.cvx_up:
             assert not self.inp_pre_con, (
@@ -164,9 +166,10 @@ class MVT(nn.Module):
             feat_out_size = feat_dim
 
             if self.rot_ver == 0:
+                out_dim = feat_out_size + (1 if self.output_arm_flag else 0)
                 self.feat_fc = get_feat_fc(
                     self.num_img * feat_fc_dim,
-                    feat_out_size,
+                    out_dim,
                 )
             elif self.rot_ver == 1:
                 assert self.num_rot * 3 <= feat_out_size

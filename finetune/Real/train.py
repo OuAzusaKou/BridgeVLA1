@@ -397,6 +397,7 @@ def experiment(cmd_args):
         renderer_device=device_id,
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
+        output_arm_flag=cmd_args.output_arm_flag,
         **mvt_cfg,
     )
 
@@ -606,6 +607,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=8e-6)
     parser.add_argument("--pretrained_rlbench_dir", type=str, default=None)
     parser.add_argument("--pretrain_path", type=str, default=None)
+    parser.add_argument("--output_arm_flag", action="store_true", default=False, help="是否输出机械臂flag")
     parser.add_argument(
         "--cameras",
         type=str,  # 每个值的类型
