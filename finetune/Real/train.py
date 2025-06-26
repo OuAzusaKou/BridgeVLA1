@@ -352,7 +352,7 @@ def experiment(cmd_args):
     t_start = time.time()
     
     # 创建训练数据集
-    train_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task)
+    train_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag)
     print("Total tasks: ", train_dataset.num_tasks)
     print("Total trajectories: ", train_dataset.num_task_paths)
     print("Dataset Length: ", len(train_dataset))
@@ -360,7 +360,7 @@ def experiment(cmd_args):
     # 创建测试数据集（如果提供了测试数据文件夹）
     test_dataset = None
     if test_data_folder:
-        test_dataset = Real_Dataset(test_data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task)
+        test_dataset = Real_Dataset(test_data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag)
         print("Test Dataset Length: ", len(test_dataset))
 
     train_dataloader, train_sampler = create_dataloader(train_dataset, rank, world_size, BATCH_SIZE_TRAIN, exp_cfg.num_workers, use_distributed=True)

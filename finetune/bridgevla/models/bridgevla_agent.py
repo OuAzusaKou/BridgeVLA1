@@ -1465,6 +1465,60 @@ class RVTAgent:
         return return_out
 
 
+    def _compute_log_probs(
+        self, 
+        q_trans, rot_q, grip_q, collision_q, action_trans,
+        action_rot_x_one_hot, action_rot_y_one_hot, action_rot_z_one_hot,
+        action_grip_one_hot, action_collision_one_hot
+    ):
+        """计算各个组件的log概率"""
+        # 计算trans的log概率
+        trans_log_probs = torch.log_softmax(q_trans, dim=-1)
+        target_trans_indices = action_trans.argmax(-1)
+        trans_target_log_probs = trans_log_probs.gather(-1, target_trans_indices.unsqueeze(-1)).squeeze(-1)
+        
+        # 计算rotation的log概率
+        rot_x_log_probs = torch.log_softmax(
+            rot_q[:, 0 * self._num_rotation_classes : 1 * self._num_rotation_classes], dim=-1
+        )
+        rot_y_log_probs = torch.log_softmax(
+            rot_q[:, 1 * self._num_rotation_classes : 2 * self._num_rotation_classes], dim=-1
+        )
+        rot_z_log_probs = torch.log_softmax(
+            rot_q[:, 2 * self._num_rotation_classes : 3 * self._num_rotation_classes], dim=-1
+        )
+        
+        target_rot_x_indices = action_rot_x_one_hot.argmax(-1)
+        target_rot_y_indices = action_rot_y_one_hot.argmax(-1)
+        target_rot_z_indices = action_rot_z_one_hot.argmax(-1)
+        
+        rot_x_target_log_probs = rot_x_log_probs.gather(-1, target_rot_x_indices.unsqueeze(-1)).squeeze(-1)
+        rot_y_target_log_probs = rot_y_log_probs.gather(-1, target_rot_y_indices.unsqueeze(-1)).squeeze(-1)
+        rot_z_target_log_probs = rot_z_log_probs.gather(-1, target_rot_z_indices.unsqueeze(-1)).squeeze(-1)
+        
+        # 计算grip和collision的log概率
+        grip_log_probs = torch.log_softmax(grip_q, dim=-1)
+        collision_log_probs = torch.log_softmax(collision_q, dim=-1)
+        
+        target_grip_indices = action_grip_one_hot.argmax(-1)
+        target_collision_indices = action_collision_one_hot.argmax(-1)
+        
+        grip_target_log_probs = grip_log_probs.gather(-1, target_grip_indices.unsqueeze(-1)).squeeze(-1)
+        collision_target_log_probs = collision_log_probs.gather(-1, target_collision_indices.unsqueeze(-1)).squeeze(-1)
+        
+        # 合并所有log概率
+        total_log_probs = (
+            trans_target_log_probs.mean() +  # 对trans取平均，因为它是空间分布
+            rot_x_target_log_probs + 
+            rot_y_target_log_probs + 
+            rot_z_target_log_probs + 
+            grip_target_log_probs + 
+            collision_target_log_probs
+        )
+        
+        return total_log_probs
+
+
 
     @torch.no_grad()
     def act(

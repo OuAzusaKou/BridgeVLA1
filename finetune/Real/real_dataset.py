@@ -82,13 +82,17 @@ class Real_Dataset(torch.utils.data.Dataset):
                 data_path,
                 device,
                 cameras,
-                ep_per_task=10
+                ep_per_task=10,
+                output_arm_flag=False
             ):
         self.device = device
         self.data_path = data_path ## folder will .pkl data files one for each example
         self.train_data = []
         self.cameras=cameras
+        self.output_arm_flag = output_arm_flag
         print(f"You use {ep_per_task} episodes per task!")
+        if self.output_arm_flag:
+            print("Output arm_flag is enabled!")
         time.sleep(5)
         self.construct_dataset(ep_per_task)
 
@@ -210,6 +214,10 @@ class Real_Dataset(torch.utils.data.Dataset):
                         sample["lang_goal"] = instruction.strip()
                         
                         sample["tasks"] = task
+                        
+                        # 如果启用output_arm_flag，则添加arm_flag到样本中
+                        if self.output_arm_flag:
+                            sample["arm_flag"] = gripper_pose[step+1]["arm_flag"]
                         
                         self.train_data.append(sample)           
         gc.collect()
