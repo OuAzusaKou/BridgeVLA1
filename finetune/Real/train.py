@@ -94,10 +94,14 @@ def reduce_value(value, average=True):
     return tensor.item() / dist.get_world_size() if average else tensor.item()
 
 
-def train(agent, data_loader, cameras=["3rd","wrist"],rank=0):
+def train(agent, data_loader, cameras=["3rd","wrist"], rank=0, update_dpo=False, dpo_beta=0.1):
     agent.train()
     if rank == 0:
         print(f"You are using {cameras} for training")
+        if update_dpo:
+            print(f"Using DPO training mode with beta={dpo_beta}")
+        else:
+            print("Using standard training mode")
     def move_tensors_to_device(d, device):
         if isinstance(d, dict):
             return {k: move_tensors_to_device(v, device) if isinstance(v, dict) else v.to(device) if isinstance(v, torch.Tensor) else v 
@@ -114,18 +118,34 @@ def train(agent, data_loader, cameras=["3rd","wrist"],rank=0):
         batch = move_tensors_to_device(raw_batch, agent._device)
         batch["tasks"] = raw_batch["tasks"]
         batch["lang_goal"]=[[[item]] for item in raw_batch["lang_goal"]]
-        update_args = {
-          "cameras":cameras,
-        }
-        update_args.update(
-            {
+        
+        if update_dpo:
+            # DPO训练模式：需要正例和负例数据
+            # 假设batch中已经包含了正例和负例数据
+            update_args = {
                 "replay_sample": batch,
                 "backprop": True,
                 "reset_log": (iteration == 0),
                 "eval_log": False,
+                "cameras": cameras,
+                "beta": dpo_beta,
             }
-        )
-        out=agent.update_real(**update_args)
+            out = agent.dpo_update_real(**update_args)
+        else:
+            # 标准训练模式
+            update_args = {
+                "cameras": cameras,
+            }
+            update_args.update(
+                {
+                    "replay_sample": batch,
+                    "backprop": True,
+                    "reset_log": (iteration == 0),
+                    "eval_log": False,
+                }
+            )
+            out = agent.update_real(**update_args)
+            
         if epoch_losses=={}:
             epoch_losses = {key: [] for key in out.keys()}
         for key in epoch_losses:
@@ -147,10 +167,14 @@ def train(agent, data_loader, cameras=["3rd","wrist"],rank=0):
     avg_losses = {key: sum(values)/len(values) for key, values in epoch_losses.items()}
     return avg_losses
 
-def evaluate(agent, data_loader, cameras=["3rd","wrist"], rank=0):
+def evaluate(agent, data_loader, cameras=["3rd","wrist"], rank=0, update_dpo=False, dpo_beta=0.1):
     agent.eval()
     if rank == 0:
         print(f"You are using {cameras} for evaluation")
+        if update_dpo:
+            print(f"Using DPO evaluation mode with beta={dpo_beta}")
+        else:
+            print("Using standard evaluation mode")
     
     def move_tensors_to_device(d, device):
         if isinstance(d, dict):
@@ -168,18 +192,33 @@ def evaluate(agent, data_loader, cameras=["3rd","wrist"], rank=0):
             batch = move_tensors_to_device(raw_batch, agent._device)
             batch["tasks"] = raw_batch["tasks"]
             batch["lang_goal"]=[[[item]] for item in raw_batch["lang_goal"]]
-            update_args = {
-                "cameras": cameras,
-            }
-            update_args.update(
-                {
+            
+            if update_dpo:
+                # DPO评估模式
+                update_args = {
                     "replay_sample": batch,
                     "backprop": False,
-                    "reset_log": (batch_idx == 0),  # 只在第一个批次时重置日志
+                    "reset_log": (batch_idx == 0),
                     "eval_log": True,
+                    "cameras": cameras,
+                    "beta": dpo_beta,
                 }
-            )
-            out = agent.update_real(**update_args)
+                out = agent.dpo_update_real(**update_args)
+            else:
+                # 标准评估模式
+                update_args = {
+                    "cameras": cameras,
+                }
+                update_args.update(
+                    {
+                        "replay_sample": batch,
+                        "backprop": False,
+                        "reset_log": (batch_idx == 0),  # 只在第一个批次时重置日志
+                        "eval_log": True,
+                    }
+                )
+                out = agent.update_real(**update_args)
+                
             if epoch_losses == {}:
                 epoch_losses = {key: [] for key in out.keys()}
             for key in epoch_losses:
@@ -488,7 +527,7 @@ def experiment(cmd_args):
 
         print(f"Rank [{dist.get_rank()}], Epoch [{i}]: Training on train dataset")
         dist.barrier()
-        train_losses = train(agent, train_dataloader, rank=dist.get_rank(), cameras=cmd_args.cameras)
+        train_losses = train(agent, train_dataloader, rank=dist.get_rank(), cameras=cmd_args.cameras, update_dpo=cmd_args.update_dpo, dpo_beta=cmd_args.dpo_beta)
         
         # 确保所有进程同步
         dist.barrier()
@@ -499,7 +538,7 @@ def experiment(cmd_args):
                 print(f"Rank [{dist.get_rank()}], Epoch [{i}]: Evaluating on test dataset")
             
             # 所有进程都参与评估
-            eval_losses = evaluate(agent, test_dataloader, rank=dist.get_rank(), cameras=cmd_args.cameras)
+            eval_losses = evaluate(agent, test_dataloader, rank=dist.get_rank(), cameras=cmd_args.cameras, update_dpo=cmd_args.update_dpo, dpo_beta=cmd_args.dpo_beta)
             
             # 确保所有进程都完成评估
             dist.barrier()
@@ -615,5 +654,8 @@ if __name__ == "__main__":
         default=["3rd"],  # 默认值
         help="List of camera names"
     )
+    parser.add_argument("--update_dpo", action="store_true",default=False, help="使用DPO训练模式")
+    parser.add_argument("--dpo_beta", type=float, default=0.1, help="DPO温度参数beta")
+    # parser.add_argument("--reference_model_path", type=str, default=None, help="参考模型路径，用于DPO训练")
     cmd_args = parser.parse_args()
     experiment(cmd_args)
