@@ -87,6 +87,7 @@ class Real_Dataset(torch.utils.data.Dataset):
                 ep_per_task=10,
                 output_arm_flag=False,
                 dpo_dataset=False,
+                current_pose_input=False,
             ):
         self.device = device
         self.data_path = data_path ## folder will .pkl data files one for each example
@@ -94,12 +95,17 @@ class Real_Dataset(torch.utils.data.Dataset):
         self.train_data = []
         self.cameras=cameras
         self.output_arm_flag = output_arm_flag
+        self.current_pose_input = current_pose_input
         self.all_lang_goals = []  # 存储所有不同的lang_goal
         print(f"You use {ep_per_task} episodes per task!")
         if self.output_arm_flag:
             print("Output arm_flag is enabled!")
         if self.dpo_dataset:
             print("DPO dataset mode is enabled!")
+        if self.current_pose_input:
+            print("Current pose input is enabled!")
+        else:
+            print("Current pose input is disabled!")
         time.sleep(5)
         self.construct_dataset(ep_per_task)
 
@@ -186,7 +192,7 @@ class Real_Dataset(torch.utils.data.Dataset):
                         current_gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
                         current_gripper_pose_euler=gripper_pose[step]["orientation"]
                         current_gripper_pose_quat=R.from_euler('xyz', current_gripper_pose_euler, degrees=True).as_quat() 
-                        sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                        # sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
 
 
                         current_gripper_state = gripper_pose[step]["claw_status"]
@@ -249,6 +255,8 @@ class Real_Dataset(torch.utils.data.Dataset):
                         if self.output_arm_flag:
                             sample["arm_flag"] = gripper_pose[step+1]["arm_flag"]
                         
+                        # 如果启用current_pose_input，则添加current_gripper_pose到样本中
+                        
                         if self.dpo_dataset:
                             # 为DPO数据集创建正例和多个负例
                             # 正例保持原始的lang_goal
@@ -282,9 +290,21 @@ class Real_Dataset(torch.utils.data.Dataset):
                                     "negative": negative_sample
                                 }
                                 
+                                if self.current_pose_input:
+                                    positive_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                    negative_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                    positive_sample['lang_goal'] = current_lang_goal + "，当前末端姿态为:" + str(positive_sample["current_gripper_pose"])
+                                    negative_sample['lang_goal'] = negative_lang_goal + "，当前末端姿态为:" + str(negative_sample["current_gripper_pose"])
+                                
                                 self.train_data.append(replay_sample)
+
+                                
                         else:
                             # 原始模式，直接添加样本
+
+                            if self.current_pose_input:
+                                sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                sample['lang_goal'] = sample['lang_goal'] + "，当前末端姿态为:" + str(sample["current_gripper_pose"])
                             self.train_data.append(sample)           
         gc.collect()
         torch.cuda.empty_cache()
