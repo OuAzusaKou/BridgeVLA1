@@ -16,6 +16,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
+
 # Set NCCL environment variables
 # os.environ['NCCL_DEBUG'] = 'INFO'
 # os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'  # 或者使用你的实际网络接口名称
@@ -48,7 +49,9 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from real_dataset import Real_Dataset
 import datetime
+import torch
 
+# torch.autograd.set_detect_anomaly(True)
 def find_free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('localhost', 0))  # 0 will make the OS choose an available port
@@ -116,12 +119,15 @@ def train(agent, data_loader, cameras=["3rd","wrist"], rank=0, update_dpo=False,
     for raw_batch in  tqdm.tqdm(data_loader, disable=(rank != 0), position=0, leave=True):
         iteration+=1
         batch = move_tensors_to_device(raw_batch, agent._device)
-        batch["tasks"] = raw_batch["tasks"]
-        batch["lang_goal"]=[[[item]] for item in raw_batch["lang_goal"]]
+
         
         if update_dpo:
             # DPO训练模式：需要正例和负例数据
             # 假设batch中已经包含了正例和负例数据
+            batch['positive']["lang_goal"]=[[[item]] for item in raw_batch["positive"]["lang_goal"]]
+            batch['negative']["lang_goal"]=[[[item]] for item in raw_batch["negative"]["lang_goal"]]
+
+
             update_args = {
                 "replay_sample": batch,
                 "backprop": True,
@@ -133,6 +139,9 @@ def train(agent, data_loader, cameras=["3rd","wrist"], rank=0, update_dpo=False,
             out = agent.dpo_update_real(**update_args)
         else:
             # 标准训练模式
+            batch["tasks"] = raw_batch["tasks"]
+            batch["lang_goal"]=[[[item]] for item in raw_batch["lang_goal"]]
+
             update_args = {
                 "cameras": cameras,
             }
@@ -190,11 +199,12 @@ def evaluate(agent, data_loader, cameras=["3rd","wrist"], rank=0, update_dpo=Fal
     with torch.no_grad():
         for batch_idx, raw_batch in enumerate(tqdm.tqdm(data_loader, disable=(rank != 0), position=0, leave=True)):
             batch = move_tensors_to_device(raw_batch, agent._device)
-            batch["tasks"] = raw_batch["tasks"]
-            batch["lang_goal"]=[[[item]] for item in raw_batch["lang_goal"]]
+
             
             if update_dpo:
                 # DPO评估模式
+                batch['positive']["lang_goal"]=[[[item]] for item in raw_batch["positive"]["lang_goal"]]
+                batch['negative']["lang_goal"]=[[[item]] for item in raw_batch["negative"]["lang_goal"]]
                 update_args = {
                     "replay_sample": batch,
                     "backprop": False,
@@ -205,6 +215,10 @@ def evaluate(agent, data_loader, cameras=["3rd","wrist"], rank=0, update_dpo=Fal
                 }
                 out = agent.dpo_update_real(**update_args)
             else:
+
+                batch["tasks"] = raw_batch["tasks"]
+                batch["lang_goal"]=[[[item]] for item in raw_batch["lang_goal"]]
+
                 # 标准评估模式
                 update_args = {
                     "cameras": cameras,
@@ -391,7 +405,7 @@ def experiment(cmd_args):
     t_start = time.time()
     
     # 创建训练数据集
-    train_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag)
+    train_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo)
     print("Total tasks: ", train_dataset.num_tasks)
     print("Total trajectories: ", train_dataset.num_task_paths)
     print("Dataset Length: ", len(train_dataset))
@@ -399,7 +413,7 @@ def experiment(cmd_args):
     # 创建测试数据集（如果提供了测试数据文件夹）
     test_dataset = None
     if test_data_folder:
-        test_dataset = Real_Dataset(test_data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag)
+        test_dataset = Real_Dataset(test_data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo)
         print("Test Dataset Length: ", len(test_dataset))
 
     train_dataloader, train_sampler = create_dataloader(train_dataset, rank, world_size, BATCH_SIZE_TRAIN, exp_cfg.num_workers, use_distributed=True)

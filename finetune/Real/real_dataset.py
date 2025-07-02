@@ -9,6 +9,8 @@ from tqdm import tqdm
 import time
 import open3d as o3d
 import cv2
+import random
+import copy
 
 def read_action_file(action_path):
     '''
@@ -83,16 +85,21 @@ class Real_Dataset(torch.utils.data.Dataset):
                 device,
                 cameras,
                 ep_per_task=10,
-                output_arm_flag=False
+                output_arm_flag=False,
+                dpo_dataset=False,
             ):
         self.device = device
         self.data_path = data_path ## folder will .pkl data files one for each example
+        self.dpo_dataset = dpo_dataset
         self.train_data = []
         self.cameras=cameras
         self.output_arm_flag = output_arm_flag
+        self.all_lang_goals = []  # 存储所有不同的lang_goal
         print(f"You use {ep_per_task} episodes per task!")
         if self.output_arm_flag:
             print("Output arm_flag is enabled!")
+        if self.dpo_dataset:
+            print("DPO dataset mode is enabled!")
         time.sleep(5)
         self.construct_dataset(ep_per_task)
 
@@ -117,9 +124,28 @@ class Real_Dataset(torch.utils.data.Dataset):
         pcd = pcd.reshape(h, w, 3)
         return pcd 
 
-
+    def collect_all_lang_goals(self, ep_per_task=10):
+        """收集数据集中所有不同的lang_goal"""
+        print("Collecting all language goals...")
+        for task in os.listdir(self.data_path):
+            task_path = os.path.join(self.data_path, task)
+            if os.path.isdir(task_path): 
+                for episode_num in os.listdir(task_path):
+                    if int(episode_num) >= ep_per_task:
+                        continue
+                    episode_path = os.path.join(task_path, episode_num)
+                    with open(os.path.join(episode_path, f"instruction.pkl"), 'rb') as f:
+                        instruction = pickle.load(f)
+                        lang_goal = instruction.strip()
+                        if lang_goal not in self.all_lang_goals:
+                            self.all_lang_goals.append(lang_goal)
+        print(f"Found {len(self.all_lang_goals)} different language goals")
         
     def construct_dataset(self,ep_per_task=10):
+        # 如果是DPO数据集，先收集所有不同的lang_goal
+        if self.dpo_dataset:
+            self.collect_all_lang_goals(ep_per_task)
+        
         self.num_tasks=len([  path_name  for path_name in  os.listdir(self.data_path) if os.path.isdir(os.path.join(self.data_path,path_name))])
         self.num_task_paths=0
         for task in os.listdir(self.data_path):
@@ -157,6 +183,10 @@ class Real_Dataset(torch.utils.data.Dataset):
                         gripper_pose_quat=R.from_euler('xyz', gripper_pose_euler, degrees=True).as_quat() # check it
                         sample["gripper_pose"] = np.concatenate((gripper_pose_xyz, gripper_pose_quat,[gripper_pose[step+1]["claw_status"]]), axis=0)
                         
+                        current_gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
+                        current_gripper_pose_euler=gripper_pose[step]["orientation"]
+                        current_gripper_pose_quat=R.from_euler('xyz', current_gripper_pose_euler, degrees=True).as_quat() 
+                        sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
 
 
                         current_gripper_state = gripper_pose[step]["claw_status"]
@@ -219,7 +249,43 @@ class Real_Dataset(torch.utils.data.Dataset):
                         if self.output_arm_flag:
                             sample["arm_flag"] = gripper_pose[step+1]["arm_flag"]
                         
-                        self.train_data.append(sample)           
+                        if self.dpo_dataset:
+                            # 为DPO数据集创建正例和多个负例
+                            # 正例保持原始的lang_goal
+                            positive_sample = copy.deepcopy(sample)
+                            
+                            # 负例：为每个其他不同的lang_goal创建一个负例
+                            current_lang_goal = sample["lang_goal"]
+                            available_lang_goals = [goal for goal in self.all_lang_goals if goal != current_lang_goal]
+                            
+                            if available_lang_goals:
+                                # 为每个可用的其他lang_goal创建一个负例
+                                for negative_lang_goal in available_lang_goals:
+                                    negative_sample = copy.deepcopy(sample)
+                                    negative_sample["lang_goal"] = negative_lang_goal
+                                    
+                                    # 创建包含正例和负例的replay_sample
+                                    replay_sample = {
+                                        "positive": positive_sample,
+                                        "negative": negative_sample
+                                    }
+                                    
+                                    self.train_data.append(replay_sample)
+                            else:
+                                # 如果没有其他lang_goal，使用一个默认的负例
+                                negative_lang_goal = "这是一个错误的指令"
+                                negative_sample = copy.deepcopy(sample)
+                                negative_sample["lang_goal"] = negative_lang_goal
+                                
+                                replay_sample = {
+                                    "positive": positive_sample,
+                                    "negative": negative_sample
+                                }
+                                
+                                self.train_data.append(replay_sample)
+                        else:
+                            # 原始模式，直接添加样本
+                            self.train_data.append(sample)           
         gc.collect()
         torch.cuda.empty_cache()
         

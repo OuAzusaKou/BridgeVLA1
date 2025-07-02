@@ -25,6 +25,7 @@ from scipy.spatial.transform import Rotation
 from torch.nn.parallel.distributed import DistributedDataParallel
 import sys
 import os
+import torch.distributed as dist
 sys.path.append(os.path.join(os.path.dirname(__file__), "..."))
 import RLBench.utils.peract_utils_rlbench as rlbench_utils
 import GemBench.utils.peract_utils_gembench as gembench_utils
@@ -596,7 +597,7 @@ class RVTAgent:
                               dim=-1).view(bs, -1)
             grip_q = out["feat_ex_rot"].view(bs, -1)[:, :2]
             collision_q = out["feat_ex_rot"].view(bs, -1)[:, 2:4]
-            arm_flag = out["feat_ex_rot"].view(bs, -1)[:, 4:] if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag else None
+            arm_flag = out["feat_ex_rot"].view(bs, -1)[:, 4:]
         else:
             assert False
 
@@ -1245,6 +1246,7 @@ class RVTAgent:
             q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
                 out, dims=(bs, nc, h, w)
             )
+            arm_flag_q = None
         # for key,item in out.items():
         #     if key != 'rev_trans' and key != 'mvt2':
         #         print(key,item.dtype)
@@ -1473,7 +1475,7 @@ class RVTAgent:
         self, 
         q_trans, rot_q, grip_q, collision_q, action_trans,
         action_rot_x_one_hot, action_rot_y_one_hot, action_rot_z_one_hot,
-        action_grip_one_hot, action_collision_one_hot
+        action_grip_one_hot, action_collision_one_hot, arm_flag_q=None, action_arm_flag_one_hot=None
     ):
         """计算各个组件的log概率"""
         # 计算trans的log概率
@@ -1510,6 +1512,13 @@ class RVTAgent:
         grip_target_log_probs = grip_log_probs.gather(-1, target_grip_indices.unsqueeze(-1)).squeeze(-1)
         collision_target_log_probs = collision_log_probs.gather(-1, target_collision_indices.unsqueeze(-1)).squeeze(-1)
         
+        # 计算arm_flag的log概率（如果启用双臂模式）
+        arm_flag_target_log_probs = 0.0
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag and arm_flag_q is not None and action_arm_flag_one_hot is not None:
+            arm_flag_log_probs = torch.log_softmax(arm_flag_q, dim=-1)
+            target_arm_flag_indices = action_arm_flag_one_hot.argmax(-1)
+            arm_flag_target_log_probs = arm_flag_log_probs.gather(-1, target_arm_flag_indices.unsqueeze(-1)).squeeze(-1)
+        
         # 合并所有log概率
         total_log_probs = (
             trans_target_log_probs.mean() +  # 对trans取平均，因为它是空间分布
@@ -1517,7 +1526,8 @@ class RVTAgent:
             rot_y_target_log_probs + 
             rot_z_target_log_probs + 
             grip_target_log_probs + 
-            collision_target_log_probs
+            collision_target_log_probs +
+            arm_flag_target_log_probs  # 添加arm_flag的log概率
         )
         
         return total_log_probs
@@ -1625,11 +1635,6 @@ class RVTAgent:
             pos_bs = len(pos_pc)
             pos_nc = self._net_mod.num_img
             pos_h = pos_w = self._net_mod.img_size
-            
-            if backprop and (self.img_aug != 0):
-                pos_img_aug = self.img_aug
-            else:
-                pos_img_aug = 0
         
         # 预处理负例数据
         neg_obs, neg_pcd = real_utils._preprocess_inputs_real(negative_sample, cameras)
@@ -1688,157 +1693,145 @@ class RVTAgent:
             neg_bs = len(neg_pc)
             neg_nc = self._net_mod.num_img
             neg_h = neg_w = self._net_mod.img_size
-            
-            if backprop and (self.img_aug != 0):
-                neg_img_aug = self.img_aug
-            else:
-                neg_img_aug = 0
         
-        # 生成正例的one-hot标签
+        # 拼接正例和负例数据
+        combined_pc = pos_pc + neg_pc
+        # combined_img_feat = torch.cat([pos_img_feat[0], neg_img_feat[0]], dim=0)
+        combined_img_feat = pos_img_feat + neg_img_feat
+        combined_wpt_local = torch.cat([pos_wpt_local, neg_wpt_local], dim=0)
+        combined_rev_trans = pos_rev_trans + neg_rev_trans
+        
+        # 拼接动作数据
+        combined_action_rot = np.concatenate([pos_action_rot, neg_action_rot], axis=0)
+        combined_action_grip = torch.cat([pos_action_grip, neg_action_grip], dim=0)
+        combined_action_ignore_collisions = torch.cat([pos_action_ignore_collisions, neg_action_ignore_collisions], dim=0)
+        
+        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+            combined_action_arm_flag = torch.cat([pos_action_arm_flag, neg_action_arm_flag], dim=0)
+        
+        # 拼接语言目标
+        combined_lang_goal = positive_sample["lang_goal"] + negative_sample["lang_goal"]
+        
+        # 设置图像增强
+        if backprop and (self.img_aug != 0):
+            combined_img_aug = self.img_aug
+        else:
+            combined_img_aug = 0
+        
+        # 生成拼接数据的one-hot标签
+        combined_bs = pos_bs + neg_bs
         if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
             (
-                pos_action_rot_x_one_hot,
-                pos_action_rot_y_one_hot,
-                pos_action_rot_z_one_hot,
-                pos_action_grip_one_hot,
-                pos_action_collision_one_hot,
-                pos_action_arm_flag_one_hot,
+                combined_action_rot_x_one_hot,
+                combined_action_rot_y_one_hot,
+                combined_action_rot_z_one_hot,
+                combined_action_grip_one_hot,
+                combined_action_collision_one_hot,
+                combined_action_arm_flag_one_hot,
             ) = self._get_one_hot_expert_actions(
-                pos_bs, pos_action_rot, pos_action_grip, pos_action_ignore_collisions, 
-                device=self._device, action_arm_flag=pos_action_arm_flag
+                combined_bs, combined_action_rot, combined_action_grip, combined_action_ignore_collisions, 
+                device=self._device, action_arm_flag=combined_action_arm_flag
             )
         else:
             (
-                pos_action_rot_x_one_hot,
-                pos_action_rot_y_one_hot,
-                pos_action_rot_z_one_hot,
-                pos_action_grip_one_hot,
-                pos_action_collision_one_hot,
+                combined_action_rot_x_one_hot,
+                combined_action_rot_y_one_hot,
+                combined_action_rot_z_one_hot,
+                combined_action_grip_one_hot,
+                combined_action_collision_one_hot,
             ) = self._get_one_hot_expert_actions(
-                pos_bs, pos_action_rot, pos_action_grip, pos_action_ignore_collisions, 
-                device=self._device
-            )
-        
-        # 生成负例的one-hot标签
-        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
-            (
-                neg_action_rot_x_one_hot,
-                neg_action_rot_y_one_hot,
-                neg_action_rot_z_one_hot,
-                neg_action_grip_one_hot,
-                neg_action_collision_one_hot,
-                neg_action_arm_flag_one_hot,
-            ) = self._get_one_hot_expert_actions(
-                neg_bs, neg_action_rot, neg_action_grip, neg_action_ignore_collisions, 
-                device=self._device, action_arm_flag=neg_action_arm_flag
-            )
-        else:
-            (
-                neg_action_rot_x_one_hot,
-                neg_action_rot_y_one_hot,
-                neg_action_rot_z_one_hot,
-                neg_action_grip_one_hot,
-                neg_action_collision_one_hot,
-            ) = self._get_one_hot_expert_actions(
-                neg_bs, neg_action_rot, neg_action_grip, neg_action_ignore_collisions, 
+                combined_bs, combined_action_rot, combined_action_grip, combined_action_ignore_collisions, 
                 device=self._device
             )
         
         # 处理旋转增强
-        pos_rot_x_y = None
-        neg_rot_x_y = None
+        combined_rot_x_y = None
         if self.rot_ver == 1:
-            pos_rot_x_y = torch.cat(
+            combined_rot_x_y = torch.cat(
                 [
-                    pos_action_rot_x_one_hot.argmax(dim=-1, keepdim=True),
-                    pos_action_rot_y_one_hot.argmax(dim=-1, keepdim=True),
-                ],
-                dim=-1,
-            )
-            neg_rot_x_y = torch.cat(
-                [
-                    neg_action_rot_x_one_hot.argmax(dim=-1, keepdim=True),
-                    neg_action_rot_y_one_hot.argmax(dim=-1, keepdim=True),
+                    combined_action_rot_x_one_hot.argmax(dim=-1, keepdim=True),
+                    combined_action_rot_y_one_hot.argmax(dim=-1, keepdim=True),
                 ],
                 dim=-1,
             )
             if self.rot_x_y_aug != 0:
-                pos_rot_x_y += torch.randint(
-                    -self.rot_x_y_aug, self.rot_x_y_aug, size=pos_rot_x_y.shape
-                ).to(pos_rot_x_y.device)
-                pos_rot_x_y %= self._num_rotation_classes
-                neg_rot_x_y += torch.randint(
-                    -self.rot_x_y_aug, self.rot_x_y_aug, size=neg_rot_x_y.shape
-                ).to(neg_rot_x_y.device)
-                neg_rot_x_y %= self._num_rotation_classes
+                combined_rot_x_y += torch.randint(
+                    -self.rot_x_y_aug, self.rot_x_y_aug, size=combined_rot_x_y.shape
+                ).to(combined_rot_x_y.device)
+                combined_rot_x_y %= self._num_rotation_classes
         
-        pos_wpt_local = pos_wpt_local.float()
-        neg_wpt_local = neg_wpt_local.float()
+        combined_wpt_local = combined_wpt_local.float()
         
-        # 前向传播正例
-        pos_out = self._network(
-            pc=pos_pc,
-            img_feat=pos_img_feat,
+        # 执行一次前向传播
+        combined_out = self._network(
+            pc=combined_pc,
+            img_feat=combined_img_feat,
             lang_emb=None,
-            img_aug=pos_img_aug,
-            wpt_local=pos_wpt_local if self._network.training else None,
-            rot_x_y=pos_rot_x_y if self.rot_ver == 1 else None,
-            language_goal=positive_sample["lang_goal"]
+            img_aug=combined_img_aug,
+            wpt_local=combined_wpt_local if self._network.training else None,
+            rot_x_y=combined_rot_x_y if self.rot_ver == 1 else None,
+            language_goal=combined_lang_goal
         )
         
-        # 前向传播负例
-        neg_out = self._network(
-            pc=neg_pc,
-            img_feat=neg_img_feat,
-            lang_emb=None,
-            img_aug=neg_img_aug,
-            wpt_local=neg_wpt_local if self._network.training else None,
-            rot_x_y=neg_rot_x_y if self.rot_ver == 1 else None,
-            language_goal=negative_sample["lang_goal"]
-        )
-        
-        # 获取正例的Q值
+        # 获取拼接数据的Q值
         if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
-            pos_q_trans, pos_rot_q, pos_grip_q, pos_collision_q, pos_y_q, pos_pts, pos_arm_flag_q = self.get_q(
-                pos_out, dims=(pos_bs, pos_nc, pos_h, pos_w)
+            combined_q_trans, combined_rot_q, combined_grip_q, combined_collision_q, combined_y_q, combined_pts, combined_arm_flag_q = self.get_q(
+                combined_out, dims=(combined_bs, pos_nc, pos_h, pos_w)
             )
         else:
-            pos_q_trans, pos_rot_q, pos_grip_q, pos_collision_q, pos_y_q, pos_pts = self.get_q(
-                pos_out, dims=(pos_bs, pos_nc, pos_h, pos_w)
+            combined_q_trans, combined_rot_q, combined_grip_q, combined_collision_q, combined_y_q, combined_pts = self.get_q(
+                combined_out, dims=(combined_bs, pos_nc, pos_h, pos_w)
             )
+            combined_arm_flag_q = None
+            combined_action_arm_flag_one_hot = None
         
-        # 获取负例的Q值
-        if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
-            neg_q_trans, neg_rot_q, neg_grip_q, neg_collision_q, neg_y_q, neg_pts, neg_arm_flag_q = self.get_q(
-                neg_out, dims=(neg_bs, neg_nc, neg_h, neg_w)
-            )
-        else:
-            neg_q_trans, neg_rot_q, neg_grip_q, neg_collision_q, neg_y_q, neg_pts = self.get_q(
-                neg_out, dims=(neg_bs, neg_nc, neg_h, neg_w)
-            )
-        
-        # 计算正例的action_trans
-        pos_action_trans = self.get_action_trans(
-            pos_wpt_local, pos_pts, pos_out, None, dims=(pos_bs, pos_nc, pos_h, pos_w)
+        # 计算拼接数据的action_trans
+        combined_action_trans = self.get_action_trans(
+            combined_wpt_local, combined_pts, combined_out, None, dims=(combined_bs, pos_nc, pos_h, pos_w)
         )
         
-        # 计算负例的action_trans
-        neg_action_trans = self.get_action_trans(
-            neg_wpt_local, neg_pts, neg_out, None, dims=(neg_bs, neg_nc, neg_h, neg_w)
-        )
+        # 拆分正例和负例数据
+        pos_q_trans = combined_q_trans[:pos_bs]
+        pos_rot_q = combined_rot_q[:pos_bs]
+        pos_grip_q = combined_grip_q[:pos_bs]
+        pos_collision_q = combined_collision_q[:pos_bs]
+        pos_action_trans = combined_action_trans[:pos_bs]
+        pos_arm_flag_q = combined_arm_flag_q[:pos_bs] if combined_arm_flag_q is not None else None
+        
+        neg_q_trans = combined_q_trans[pos_bs:]
+        neg_rot_q = combined_rot_q[pos_bs:]
+        neg_grip_q = combined_grip_q[pos_bs:]
+        neg_collision_q = combined_collision_q[pos_bs:]
+        neg_action_trans = combined_action_trans[pos_bs:]
+        neg_arm_flag_q = combined_arm_flag_q[pos_bs:] if combined_arm_flag_q is not None else None
+        
+        # 拆分one-hot标签
+        pos_action_rot_x_one_hot = combined_action_rot_x_one_hot[:pos_bs]
+        pos_action_rot_y_one_hot = combined_action_rot_y_one_hot[:pos_bs]
+        pos_action_rot_z_one_hot = combined_action_rot_z_one_hot[:pos_bs]
+        pos_action_grip_one_hot = combined_action_grip_one_hot[:pos_bs]
+        pos_action_collision_one_hot = combined_action_collision_one_hot[:pos_bs]
+        pos_action_arm_flag_one_hot = combined_action_arm_flag_one_hot[:pos_bs] if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag else None
+        
+        neg_action_rot_x_one_hot = combined_action_rot_x_one_hot[pos_bs:]
+        neg_action_rot_y_one_hot = combined_action_rot_y_one_hot[pos_bs:]
+        neg_action_rot_z_one_hot = combined_action_rot_z_one_hot[pos_bs:]
+        neg_action_grip_one_hot = combined_action_grip_one_hot[pos_bs:]
+        neg_action_collision_one_hot = combined_action_collision_one_hot[pos_bs:]
+        neg_action_arm_flag_one_hot = combined_action_arm_flag_one_hot[pos_bs:] if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag else None
         
         # 计算正例的log概率
         pos_log_probs = self._compute_log_probs(
             pos_q_trans, pos_rot_q, pos_grip_q, pos_collision_q, pos_action_trans,
             pos_action_rot_x_one_hot, pos_action_rot_y_one_hot, pos_action_rot_z_one_hot,
-            pos_action_grip_one_hot, pos_action_collision_one_hot
+            pos_action_grip_one_hot, pos_action_collision_one_hot, pos_arm_flag_q, pos_action_arm_flag_one_hot
         )
         
         # 计算负例的log概率
         neg_log_probs = self._compute_log_probs(
             neg_q_trans, neg_rot_q, neg_grip_q, neg_collision_q, neg_action_trans,
             neg_action_rot_x_one_hot, neg_action_rot_y_one_hot, neg_action_rot_z_one_hot,
-            neg_action_grip_one_hot, neg_action_collision_one_hot
+            neg_action_grip_one_hot, neg_action_collision_one_hot, neg_arm_flag_q, neg_action_arm_flag_one_hot
         )
         
         # 计算参考模型的log概率（如果存在reference_model）
@@ -1846,55 +1839,52 @@ class RVTAgent:
         neg_ref_log_probs = None
         if hasattr(self, 'reference_model'):
             with torch.no_grad():
-                # 参考模型前向传播正例
-                pos_ref_out = self.reference_model(
-                    pc=pos_pc,
-                    img_feat=pos_img_feat,
+                # 参考模型前向传播拼接数据
+                ref_out = self.reference_model(
+                    pc=combined_pc,
+                    img_feat=combined_img_feat,
                     lang_emb=None,
-                    img_aug=pos_img_aug,
-                    wpt_local=pos_wpt_local if self.reference_model.training else None,
-                    rot_x_y=pos_rot_x_y if self.rot_ver == 1 else None,
-                    language_goal=positive_sample["lang_goal"]
-                )
-                
-                # 参考模型前向传播负例
-                neg_ref_out = self.reference_model(
-                    pc=neg_pc,
-                    img_feat=neg_img_feat,
-                    lang_emb=None,
-                    img_aug=neg_img_aug,
-                    wpt_local=neg_wpt_local if self.reference_model.training else None,
-                    rot_x_y=neg_rot_x_y if self.rot_ver == 1 else None,
-                    language_goal=negative_sample["lang_goal"]
+                    img_aug=combined_img_aug,
+                    wpt_local=combined_wpt_local if self.reference_model.training else None,
+                    rot_x_y=combined_rot_x_y if self.rot_ver == 1 else None,
+                    language_goal=combined_lang_goal
                 )
                 
                 # 获取参考模型的Q值
                 if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
-                    pos_ref_q_trans, pos_ref_rot_q, pos_ref_grip_q, pos_ref_collision_q, pos_ref_y_q, pos_ref_pts, pos_ref_arm_flag_q = self.get_q(
-                        pos_ref_out, dims=(pos_bs, pos_nc, pos_h, pos_w)
-                    )
-                    neg_ref_q_trans, neg_ref_rot_q, neg_ref_grip_q, neg_ref_collision_q, neg_ref_y_q, neg_ref_pts, neg_ref_arm_flag_q = self.get_q(
-                        neg_ref_out, dims=(neg_bs, neg_nc, neg_h, neg_w)
+                    ref_q_trans, ref_rot_q, ref_grip_q, ref_collision_q, ref_y_q, ref_pts, ref_arm_flag_q = self.get_q(
+                        ref_out, dims=(combined_bs, pos_nc, pos_h, pos_w)
                     )
                 else:
-                    pos_ref_q_trans, pos_ref_rot_q, pos_ref_grip_q, pos_ref_collision_q, pos_ref_y_q, pos_ref_pts = self.get_q(
-                        pos_ref_out, dims=(pos_bs, pos_nc, pos_h, pos_w)
+                    ref_q_trans, ref_rot_q, ref_grip_q, ref_collision_q, ref_y_q, ref_pts = self.get_q(
+                        ref_out, dims=(combined_bs, pos_nc, pos_h, pos_w)
                     )
-                    neg_ref_q_trans, neg_ref_rot_q, neg_ref_grip_q, neg_ref_collision_q, neg_ref_y_q, neg_ref_pts = self.get_q(
-                        neg_ref_out, dims=(neg_bs, neg_nc, neg_h, neg_w)
-                    )
+                    ref_arm_flag_q = None
+                
+                # 拆分参考模型的Q值
+                pos_ref_q_trans = ref_q_trans[:pos_bs]
+                pos_ref_rot_q = ref_rot_q[:pos_bs]
+                pos_ref_grip_q = ref_grip_q[:pos_bs]
+                pos_ref_collision_q = ref_collision_q[:pos_bs]
+                pos_ref_arm_flag_q = ref_arm_flag_q[:pos_bs] if ref_arm_flag_q is not None else None
+                
+                neg_ref_q_trans = ref_q_trans[pos_bs:]
+                neg_ref_rot_q = ref_rot_q[pos_bs:]
+                neg_ref_grip_q = ref_grip_q[pos_bs:]
+                neg_ref_collision_q = ref_collision_q[pos_bs:]
+                neg_ref_arm_flag_q = ref_arm_flag_q[pos_bs:] if ref_arm_flag_q is not None else None
                 
                 # 计算参考模型的log概率
                 pos_ref_log_probs = self._compute_log_probs(
                     pos_ref_q_trans, pos_ref_rot_q, pos_ref_grip_q, pos_ref_collision_q, pos_action_trans,
                     pos_action_rot_x_one_hot, pos_action_rot_y_one_hot, pos_action_rot_z_one_hot,
-                    pos_action_grip_one_hot, pos_action_collision_one_hot
+                    pos_action_grip_one_hot, pos_action_collision_one_hot, pos_ref_arm_flag_q, pos_action_arm_flag_one_hot
                 )
                 
                 neg_ref_log_probs = self._compute_log_probs(
                     neg_ref_q_trans, neg_ref_rot_q, neg_ref_grip_q, neg_ref_collision_q, neg_action_trans,
                     neg_action_rot_x_one_hot, neg_action_rot_y_one_hot, neg_action_rot_z_one_hot,
-                    neg_action_grip_one_hot, neg_action_collision_one_hot
+                    neg_action_grip_one_hot, neg_action_collision_one_hot, neg_ref_arm_flag_q, neg_action_arm_flag_one_hot
                 )
         
         loss_log = {}
@@ -1936,42 +1926,19 @@ class RVTAgent:
                     pos_collision_q, pos_action_collision_one_hot.argmax(-1)
                 ).mean()
 
+                pos_arm_flag_loss = 0.0
                 if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
                     pos_arm_flag_loss = self._cross_entropy_loss(
                         pos_arm_flag_q,
                         pos_action_arm_flag_one_hot.argmax(-1),
                     ).mean()
                 
-                # # 负例的监督损失（权重较小）
-                # neg_trans_loss = self._cross_entropy_loss(neg_q_trans, neg_action_trans).mean()
-                # neg_rot_loss_x = self._cross_entropy_loss(
-                #     neg_rot_q[:, 0 * self._num_rotation_classes : 1 * self._num_rotation_classes],
-                #     neg_action_rot_x_one_hot.argmax(-1),
-                # ).mean()
-                # neg_rot_loss_y = self._cross_entropy_loss(
-                #     neg_rot_q[:, 1 * self._num_rotation_classes : 2 * self._num_rotation_classes],
-                #     neg_action_rot_y_one_hot.argmax(-1),
-                # ).mean()
-                # neg_rot_loss_z = self._cross_entropy_loss(
-                #     neg_rot_q[:, 2 * self._num_rotation_classes : 3 * self._num_rotation_classes],
-                #     neg_action_rot_z_one_hot.argmax(-1),
-                # ).mean()
-                # neg_grip_loss = self._cross_entropy_loss(
-                #     neg_grip_q,
-                #     neg_action_grip_one_hot.argmax(-1),
-                # ).mean()
-                # neg_collision_loss = self._cross_entropy_loss(
-                #     neg_collision_q, neg_action_collision_one_hot.argmax(-1)
-                # ).mean()
-                
-                # 总损失 = DPO损失 + KL散度损失 + 正例监督损失 + 负例监督损失（权重较小）
+                # 总损失 = DPO损失 + KL散度损失 + 正例监督损失
                 total_loss = (
                     dpo_loss + 
                     0.1 * kl_loss +  # KL散度权重
                     0.5 * (pos_trans_loss + pos_rot_loss_x + pos_rot_loss_y + pos_rot_loss_z + 
                            pos_grip_loss + pos_collision_loss + pos_arm_flag_loss)
-                        #  + 0.1 * (neg_trans_loss + neg_rot_loss_x + neg_rot_loss_y + neg_rot_loss_z + 
-                        #     neg_grip_loss + neg_collision_loss + neg_arm_flag_loss)
                 )
             else:
                 # 总损失 = DPO损失 + KL散度损失
@@ -1979,15 +1946,13 @@ class RVTAgent:
             
             # 反向传播
             self._optimizer.zero_grad(set_to_none=True)
-            
             total_loss.backward()
             self._optimizer.step()
-            
             # 记录损失
             loss_log = {
                 "dpo_total_loss": total_loss.item(),
                 "dpo_loss": dpo_loss.item(),
-                "kl_loss": kl_loss.item(),
+                "kl_loss": 0,
                 "pos_log_probs": pos_log_probs.mean().item(),
                 "neg_log_probs": neg_log_probs.mean().item(),
                 "log_diff": log_diff.mean().item(),
@@ -2024,18 +1989,75 @@ class RVTAgent:
                 dpo_loss = -torch.log(torch.sigmoid(beta * log_diff)).mean()
                 
                 kl_loss = 0.0
+
                 if hasattr(self, 'reference_model') and pos_ref_log_probs is not None:
                     pos_kl = (pos_log_probs - pos_ref_log_probs).mean()
                     neg_kl = (neg_log_probs - neg_ref_log_probs).mean()
                     kl_loss = pos_kl + neg_kl
+
+
+                
+                if self.add_rgc_loss:
+                    pos_trans_loss = self._cross_entropy_loss(pos_q_trans, pos_action_trans).mean()
+                    pos_rot_loss_x = self._cross_entropy_loss(
+                        pos_rot_q[:, 0 * self._num_rotation_classes : 1 * self._num_rotation_classes],
+                        pos_action_rot_x_one_hot.argmax(-1),
+                    ).mean()
+                    pos_rot_loss_y = self._cross_entropy_loss(
+                        pos_rot_q[:, 1 * self._num_rotation_classes : 2 * self._num_rotation_classes],
+                        pos_action_rot_y_one_hot.argmax(-1),
+                    ).mean()
+                    pos_rot_loss_z = self._cross_entropy_loss(
+                        pos_rot_q[:, 2 * self._num_rotation_classes : 3 * self._num_rotation_classes],
+                        pos_action_rot_z_one_hot.argmax(-1),
+                    ).mean()
+                    pos_grip_loss = self._cross_entropy_loss(
+                        pos_grip_q,
+                        pos_action_grip_one_hot.argmax(-1),
+                    ).mean()
+                    pos_collision_loss = self._cross_entropy_loss(
+                        pos_collision_q, pos_action_collision_one_hot.argmax(-1)
+                    ).mean()
+
+                    pos_arm_flag_loss = 0.0
+                    if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                        pos_arm_flag_loss = self._cross_entropy_loss(
+                            pos_arm_flag_q,
+                            pos_action_arm_flag_one_hot.argmax(-1),
+                        ).mean()
+                    
+                    # 总损失 = DPO损失 + KL散度损失 + 正例监督损失
+                    total_loss = (
+                        dpo_loss + 
+                        0.1 * kl_loss +  # KL散度权重
+                        0.5 * (pos_trans_loss + pos_rot_loss_x + pos_rot_loss_y + pos_rot_loss_z + 
+                            pos_grip_loss + pos_collision_loss + pos_arm_flag_loss))
+                else:
+                    total_loss = dpo_loss + 0.1 * kl_loss
+
+
                 
                 eval_loss_log = {
+                    "eval_total_loss": total_loss.item(),
                     "eval_dpo_loss": dpo_loss.item(),
-                    "eval_kl_loss": kl_loss.item(),
+                    "eval_kl_loss": 0.0,
                     "eval_pos_log_probs": pos_log_probs.mean().item(),
                     "eval_neg_log_probs": neg_log_probs.mean().item(),
                     "eval_log_diff": log_diff.mean().item(),
                 }
+                if self.add_rgc_loss:
+                    eval_loss_log.update({
+                        "eval_pos_trans_loss": pos_trans_loss.item(),
+                        "eval_pos_rot_loss_x": pos_rot_loss_x.item(),
+                        "eval_pos_rot_loss_y": pos_rot_loss_y.item(),
+                        "eval_pos_rot_loss_z": pos_rot_loss_z.item(),
+                        "eval_pos_grip_loss": pos_grip_loss.item(),
+                        "eval_pos_collision_loss": pos_collision_loss.item(),
+                    })
+                    if hasattr(self._net_mod, 'output_arm_flag') and self._net_mod.output_arm_flag:
+                        loss_log.update({
+                            "eval_pos_arm_flag_loss": pos_arm_flag_loss.item(),
+                        })
                 
                 if hasattr(self, 'reference_model') and pos_ref_log_probs is not None:
                     eval_loss_log.update({

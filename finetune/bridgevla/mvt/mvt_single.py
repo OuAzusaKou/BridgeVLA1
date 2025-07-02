@@ -218,7 +218,7 @@ class MVT(nn.Module):
             return all_params
 
 
-        model_id = "google/paligemma-3b-pt-224"
+        model_id = "/home/lpy/.cache/huggingface/hub/models--google--paligemma-3b-pt-224/snapshots/35e4f46485b4d07967e7e9935bc3786aad50687c"
         if load_pretrain:
             assert pretrain_path is not None
 

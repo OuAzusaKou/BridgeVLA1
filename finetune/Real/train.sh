@@ -32,3 +32,7 @@ torchrun --nnodes=1 --node_rank=0 --master_port 15555 --nproc_per_node=4 train.p
 
 # train with arm flag
 # nohup bash  /home/wzh/BridgeVLA/finetune/Real/train.sh    --exp_cfg_path configs/real.yaml --exp_note a100_dobot_open_door_arm_flag --layer_index -1 --freeze_vision_tower --load_pretrain --pretrain_path  /home/BridgeVLA/pretrained_ckpt/pretrain/one_image_layer1_pretrain_3824  --data_folder /home/BridgeVLA/data/20250627 --test_data_folder /home/BridgeVLA/data/20250627  --ep_per_task  25 --output_arm_flag &
+
+
+# train with dpo
+# nohup bash  /home/wzh/BridgeVLA/finetune/Real/train.sh    --exp_cfg_path configs/real.yaml --exp_note a100_dobot_open_door_arm_flag --layer_index -1 --freeze_vision_tower --load_pretrain --pretrain_path  /home/BridgeVLA/pretrained_ckpt/pretrain/one_image_layer1_pretrain_3824  --data_folder /home/BridgeVLA/data/press_bottle/dobot_formate --test_data_folder /home/BridgeVLA/data/press_bottle/dobot_formate  --ep_per_task  25 --update_dpo &
