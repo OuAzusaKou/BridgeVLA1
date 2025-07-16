@@ -14,6 +14,9 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
+
+import os
+# os.environ["WANDB_MODE"] = "offline"
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 
@@ -270,7 +273,7 @@ def save_agent(agent, path, epoch):
         {
             "epoch": epoch,
             "model_state": model_state,
-            "optimizer_state": optimizer.state_dict(),
+            # "optimizer_state": optimizer.state_dict(),
         },
         path,
     )
@@ -406,26 +409,60 @@ def experiment(cmd_args):
     print(f"BATCH_SIZE_TRAIN={BATCH_SIZE_TRAIN}")
 
     EPOCHS = exp_cfg.epochs
-    data_folder = cmd_args.data_folder
-    test_data_folder = cmd_args.test_data_folder if hasattr(cmd_args, 'test_data_folder') else None
+    
+    # 处理data_folder参数，支持单个路径或路径列表
+    if isinstance(cmd_args.data_folder, str):
+        data_folder = [cmd_args.data_folder]
+    else:
+        data_folder = cmd_args.data_folder
+    
+    # 处理test_data_folder参数，支持单个路径或路径列表
+    if cmd_args.test_data_folder is None:
+        test_data_folders = None
+    elif isinstance(cmd_args.test_data_folder, str):
+        test_data_folders = [cmd_args.test_data_folder]
+    else:
+        test_data_folders = cmd_args.test_data_folder
 
     log_dir = get_logdir(cmd_args, exp_cfg, dist)
     t_start = time.time()
     
-    # 创建训练数据集
-    train_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
-    print("Total tasks: ", train_dataset.num_tasks)
-    print("Total trajectories: ", train_dataset.num_task_paths)
-    print("Dataset Length: ", len(train_dataset))
+    # 创建完整数据集
+    full_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
+    print("Total tasks: ", full_dataset.num_tasks)
+    print("Total trajectories: ", full_dataset.num_task_paths)
+    print("Full Dataset Length: ", len(full_dataset))
     
-    # 创建测试数据集（如果提供了测试数据文件夹）
-    test_dataset = None
-    if test_data_folder:
-        test_dataset = Real_Dataset(test_data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
-        print("Test Dataset Length: ", len(test_dataset))
+    # 如果指定了test_split_ratio，则从训练集中分割出测试集
+    if cmd_args.test_split_ratio > 0:
+        if test_data_folders:
+            print("Warning: Both test_split_ratio and test_data_folder are specified. Using test_data_folder.")
+            test_dataset = Real_Dataset(test_data_folders, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
+            train_dataset = full_dataset
+        else:
+            # 计算分割点
+            total_size = len(full_dataset)
+            test_size = int(total_size * cmd_args.test_split_ratio)
+            train_size = total_size - test_size
+            
+            # 使用torch.utils.data.random_split进行数据集分割
+            train_dataset, test_dataset = torch.utils.data.random_split(
+                full_dataset, 
+                [train_size, test_size],
+                generator=torch.Generator().manual_seed(42)  # 固定随机种子以确保可重复性
+            )
+            
+            print(f"Split dataset: Train={len(train_dataset)}, Test={len(test_dataset)}")
+    else:
+        # 使用原有的逻辑
+        train_dataset = full_dataset
+        test_dataset = None
+        if test_data_folders:
+            test_dataset = Real_Dataset(test_data_folders, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
+            print("Test Dataset Length: ", len(test_dataset))
 
     train_dataloader, train_sampler = create_dataloader(train_dataset, rank, world_size, BATCH_SIZE_TRAIN, exp_cfg.num_workers, use_distributed=True)
-    test_dataloader, test_sampler = create_dataloader(test_dataset, rank, world_size, BATCH_SIZE_TRAIN, exp_cfg.num_workers, use_distributed=True) if test_dataset else None
+    test_dataloader, test_sampler = create_dataloader(test_dataset, rank, world_size, BATCH_SIZE_TRAIN, exp_cfg.num_workers, use_distributed=True) if test_dataset else (None,None)
     
     t_end = time.time()
     if local_rank == 0:
@@ -648,8 +685,16 @@ if __name__ == "__main__":
     parser.add_argument("--exp_note", type=str, default="")
 
     parser.add_argument("--log-dir", type=str, default="/home/wzh/BridgeVLA/finetune/Real/logs")
-    parser.add_argument("--data_folder", type=str, default="/home/wzh/BridgeVLA/finetune/Real/data/0616_open_the_door")
-    parser.add_argument("--test_data_folder", type=str, default=None, help="Path to test dataset folder")
+    
+    # 修改data_folder参数以支持列表输入
+    parser.add_argument("--data_folder", type=str, nargs="+", default=["/home/wzh/BridgeVLA/finetune/Real/data/0616_open_the_door"], 
+                       help="Path(s) to training dataset folder(s). Can be a single path or multiple paths separated by spaces.")
+    
+    # 修改test_data_folder参数以支持列表输入
+    parser.add_argument("--test_data_folder", type=str, nargs="+", default=None, 
+                       help="Path(s) to test dataset folder(s). Can be a single path or multiple paths separated by spaces.")
+    
+    parser.add_argument("--test_split_ratio", type=float, default=0.0, help="Ratio of training data to use as test set (0.0-1.0). If > 0, will split training data into train/test sets.")
     parser.add_argument("--eval_interval", type=int, default=5, help="Interval between evaluations in epochs")
     
     parser.add_argument("--with-eval", action="store_true", default=False)
@@ -665,7 +710,7 @@ if __name__ == "__main__":
     parser.add_argument("--freeze_vision_tower", action="store_true")
     parser.add_argument("--load_pretrain", action="store_true")
     parser.add_argument("--add_proprio", action="store_true")
-    parser.add_argument("--lr", type=float, default=8e-6)
+    parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--pretrained_rlbench_dir", type=str, default=None)
     parser.add_argument("--pretrain_path", type=str, default=None)
     parser.add_argument("--output_arm_flag", action="store_true", default=False, help="是否输出机械臂flag")

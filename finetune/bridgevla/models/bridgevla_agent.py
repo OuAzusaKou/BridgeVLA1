@@ -1579,7 +1579,7 @@ class RVTAgent:
         pos_obs, pos_pcd = real_utils._preprocess_inputs_real(positive_sample, cameras)
         
         with torch.no_grad():
-            pos_pc, pos_img_feat = rvt_utils.get_pc_img_feat(pos_obs, pos_pcd)
+            pos_obs, pos_img_feat = rvt_utils.get_pc_img_feat(pos_obs, pos_pcd)
             pos_pc = pos_pc.float()
             pos_img_feat = pos_img_feat.float()
             

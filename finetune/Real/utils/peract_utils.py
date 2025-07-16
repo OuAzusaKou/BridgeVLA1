@@ -16,20 +16,28 @@ from peract_colab.arm.utils import stack_on_channel
 CAMERAS = ["front", "left_shoulder", "right_shoulder", "wrist"]
 CAMERAS_REAL = ["3rd"]
 
-SCENE_BOUNDS_real  = [
+# SCENE_BOUNDS_real  = [
+#     -1.3,
+#     -1.5,
+#     -0.3,
+#     0.4,
+#     0.7,
+#     0.6,
+# ]
+SCENE_BOUNDS_real = [
+    -1.1,
     -0.6,
-    -0.9,
-    -0.1,
-    0.4,
-    0.1,
+    -0.2,
+    0.2,
+    0.5,
     0.6,
 ]
 SCENE_BOUNDS  = [
+    -1.1,
     -0.6,
-    -0.9,
-    -0.1,
-    0.4,
-    0.1,
+    -0.2,
+    0.2,
+    0.5,
     0.6,
 ]
 IMAGE_SIZE = 128

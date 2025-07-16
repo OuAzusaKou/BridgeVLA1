@@ -11,7 +11,7 @@ import open3d as o3d
 import cv2
 import random
 import copy
-
+# import joblib
 def read_action_file(action_path):
     '''
     文件内容类似如下
@@ -81,7 +81,7 @@ def read_action_file(action_path):
 class Real_Dataset(torch.utils.data.Dataset):
     def __init__(   
                 self,
-                data_path,
+                data_path,  # 现在支持字符串或列表
                 device,
                 cameras,
                 ep_per_task=10,
@@ -90,7 +90,11 @@ class Real_Dataset(torch.utils.data.Dataset):
                 current_pose_input=False,
             ):
         self.device = device
-        self.data_path = data_path ## folder will .pkl data files one for each example
+        # 支持单个路径或路径列表
+        if isinstance(data_path, str):
+            self.data_paths = [data_path]
+        else:
+            self.data_paths = data_path
         self.dpo_dataset = dpo_dataset
         self.train_data = []
         self.cameras=cameras
@@ -98,6 +102,7 @@ class Real_Dataset(torch.utils.data.Dataset):
         self.current_pose_input = current_pose_input
         self.all_lang_goals = []  # 存储所有不同的lang_goal
         print(f"You use {ep_per_task} episodes per task!")
+        print(f"Data paths: {self.data_paths}")
         if self.output_arm_flag:
             print("Output arm_flag is enabled!")
         if self.dpo_dataset:
@@ -133,18 +138,19 @@ class Real_Dataset(torch.utils.data.Dataset):
     def collect_all_lang_goals(self, ep_per_task=10):
         """收集数据集中所有不同的lang_goal"""
         print("Collecting all language goals...")
-        for task in os.listdir(self.data_path):
-            task_path = os.path.join(self.data_path, task)
-            if os.path.isdir(task_path): 
-                for episode_num in os.listdir(task_path):
-                    if int(episode_num) >= ep_per_task:
-                        continue
-                    episode_path = os.path.join(task_path, episode_num)
-                    with open(os.path.join(episode_path, f"instruction.pkl"), 'rb') as f:
-                        instruction = pickle.load(f)
-                        lang_goal = instruction.strip()
-                        if lang_goal not in self.all_lang_goals:
-                            self.all_lang_goals.append(lang_goal)
+        for data_path in self.data_paths:
+            for task in os.listdir(data_path):
+                task_path = os.path.join(data_path, task)
+                if os.path.isdir(task_path): 
+                    for episode_num in os.listdir(task_path):
+                        if int(episode_num) >= ep_per_task:
+                            continue
+                        episode_path = os.path.join(task_path, episode_num)
+                        with open(os.path.join(episode_path, f"instruction.pkl"), 'rb') as f:
+                            instruction = pickle.load(f)
+                            lang_goal = instruction.strip()
+                            if lang_goal not in self.all_lang_goals:
+                                self.all_lang_goals.append(lang_goal)
         print(f"Found {len(self.all_lang_goals)} different language goals")
         
     def construct_dataset(self,ep_per_task=10):
@@ -152,160 +158,175 @@ class Real_Dataset(torch.utils.data.Dataset):
         if self.dpo_dataset:
             self.collect_all_lang_goals(ep_per_task)
         
-        self.num_tasks=len([  path_name  for path_name in  os.listdir(self.data_path) if os.path.isdir(os.path.join(self.data_path,path_name))])
-        self.num_task_paths=0
-        for task in os.listdir(self.data_path):
-            task_path = os.path.join(self.data_path, task)
-            if os.path.isdir(task_path): 
-                for episode_num in tqdm(os.listdir(task_path)):
-                    print('episode_num',episode_num)
-                    if int(episode_num) >=ep_per_task:
-                        print(f"episode num {episode_num} is larger than {ep_per_task}")
-                        continue
-                    # if int(episode_num) %2==0:
-                    #     print(f"episode num {episode_num} is even, skip it")
-                    #     continue
-                    self.num_task_paths+=1
-                    episode_path = os.path.join(task_path, episode_num)
-                    
-                    action_path = os.path.join(episode_path, 'pose.pkl')
-                    rgb_3rd = os.path.join(episode_path, "zed_rgb")
-                    pcd_3rd = os.path.join(episode_path, "zed_pcd")
-                    gripper_pose = read_action_file(action_path)
-                    
-
-                    num_steps = sum(1 for file_name in os.listdir(rgb_3rd) if file_name.endswith('.pkl')) 
-                    # num_steps=5 # hardcode
-                    for step in range(num_steps-1):
-                        sample = {}
-                        # Next pose action
-                       
-                        # sample["gripper_pose"] = np.concatenate((gripper_pose[step+1]["position"], gripper_pose[step+1]["orientation"]), axis=0)
-                        # print("before:",sample["gripper_pose"][3:7])
-                        # sample["gripper_pose"][3:7] = sample["gripper_pose"][[4, 5, 6, 3]] # x y z w 作为最终的输入
+        # 计算所有路径中的任务总数
+        self.num_tasks = 0
+        for data_path in self.data_paths:
+            self.num_tasks += len([path_name for path_name in os.listdir(data_path) 
+                                 if os.path.isdir(os.path.join(data_path, path_name))])
+        
+        self.num_task_paths = 0
+        
+        # 遍历所有数据路径
+        for data_path in self.data_paths:
+            for task in os.listdir(data_path):
+                task_path = os.path.join(data_path, task)
+                if os.path.isdir(task_path): 
+                    for episode_num in tqdm(os.listdir(task_path)):
+                        print('episode_num',episode_num)
+                        if int(episode_num) >=ep_per_task:
+                            print(f"episode num {episode_num} is larger than {ep_per_task}")
+                            continue
+                        # if int(episode_num) %2==0:
+                        #     print(f"episode num {episode_num} is even, skip it")
+                        #     continue
+                        self.num_task_paths+=1
+                        episode_path = os.path.join(task_path, episode_num)
                         
-                        gripper_pose_xyz=np.array(gripper_pose[step+1]["position"])/1000 # mm -> m
-                        gripper_pose_euler=gripper_pose[step+1]["orientation"]
-                        gripper_pose_quat=R.from_euler('xyz', gripper_pose_euler, degrees=True).as_quat() # check it
-                        sample["gripper_pose"] = np.concatenate((gripper_pose_xyz, gripper_pose_quat,[gripper_pose[step+1]["claw_status"]]), axis=0)
+                        action_path = os.path.join(episode_path, 'pose.pkl')
+                        rgb_3rd = os.path.join(episode_path, "zed_rgb")
+                        pcd_3rd = os.path.join(episode_path, "zed_pcd")
+                        gripper_pose = read_action_file(action_path)
                         
-                        current_gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
-                        current_gripper_pose_euler=gripper_pose[step]["orientation"]
-                        current_gripper_pose_quat=R.from_euler('xyz', current_gripper_pose_euler, degrees=True).as_quat() 
-                        # sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
 
-
-                        current_gripper_state = gripper_pose[step]["claw_status"]
-
-                        time = (1. - (step / float(num_steps - 1))) * 2. - 1.
-                        sample['low_dim_state'] = np.concatenate(
-                            [[current_gripper_state], [time]]).astype(np.float32)
+                        num_steps = sum(1 for file_name in os.listdir(rgb_3rd) if file_name.endswith('.pkl')) 
+                        # num_steps=5 # hardcode
+                        for step in range(num_steps-1):
+                            sample = {}
+                            # Next pose action
+                           
+                            # sample["gripper_pose"] = np.concatenate((gripper_pose[step+1]["position"], gripper_pose[step+1]["orientation"]), axis=0)
+                            # print("before:",sample["gripper_pose"][3:7])
+                            # sample["gripper_pose"][3:7] = sample["gripper_pose"][[4, 5, 6, 3]] # x y z w 作为最终的输入
                             
-                        sample["ignore_collisions"] = 1.0
-                        
-                        sample["3rd"], sample["wrist"] = {}, {}
-                        if "3rd" in self.cameras:
-                            with open(os.path.join(rgb_3rd, f"{step}.pkl"), 'rb') as f:
-                                sample["3rd"]["rgb"] = pickle.load(f)[:, :, :3]
-                                sample["3rd"]["rgb"] = np.ascontiguousarray(sample["3rd"]["rgb"])  #   check it  the final image should be RGB
-                                sample["3rd"]["rgb"] = np.transpose(sample["3rd"]["rgb"], [2, 0, 1])  # 转为（C,H,W）
-                            with open(os.path.join(pcd_3rd, f"{step}.pkl"), 'rb') as f:
-                                sample["3rd"]["pcd"] = pickle.load(f)[:, :, :3]  
-                                sample["3rd"]["pcd"] = self.convert_pcd_to_base(pcd=sample["3rd"]["pcd"], type="3rd",extrinsic_path=os.path.join(episode_path, "extrinsic_matrix.pkl"))
-                                sample["3rd"]["pcd"] = np.transpose(sample["3rd"]["pcd"], [2, 0, 1]).astype(np.float32)
+                            gripper_pose_xyz=np.array(gripper_pose[step+1]["position"])/1000 # mm -> m
+                            gripper_pose_euler=gripper_pose[step+1]["orientation"]
+                            gripper_pose_quat=R.from_euler('xyz', gripper_pose_euler, degrees=True).as_quat() # check it
+                            sample["gripper_pose"] = np.concatenate((gripper_pose_xyz, gripper_pose_quat,[gripper_pose[step+1]["claw_status"]]), axis=0)
                             
-                        if "wrist"  in self.cameras:
-                            assert False
-                            with open(os.path.join(rgb_wrist, f"{step}.pkl"), 'rb') as f:
-                                sample["wrist"]["rgb"] = pickle.load(f)
-                                sample["wrist"]["rgb"] = np.ascontiguousarray(sample["wrist"]["rgb"][:, :, ::-1])  # BGR转RGB（H,W,C）
-                                sample["wrist"]["rgb"] = np.transpose(sample["wrist"]["rgb"], [2, 0, 1])
-                            with open(os.path.join(pcd_wrist, f"{step}.pkl"), 'rb') as f:
-                                sample["wrist"]["pcd"] = pickle.load(f)
-                                sample["wrist"]["pcd"] = self.convert_pcd_to_base(pcd=sample["wrist"]["pcd"], type="wrist")
-                                sample["wrist"]["pcd"] = np.transpose(sample["wrist"]["pcd"], [2, 0, 1])
-                        
-                        # import open3d as o3d
-                        # def vis_pcd(pcd, rgb):
+                            current_gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
+                            current_gripper_pose_euler=gripper_pose[step]["orientation"]
+                            current_gripper_pose_quat=R.from_euler('xyz', current_gripper_pose_euler, degrees=True).as_quat() 
+                            # sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
 
-                        #     # 将点云和颜色转换为二维的形状 (N, 3)
-                        #     pcd_flat = pcd.reshape(-1, 3)  # (200 * 200, 3)
-                        #     rgb_flat = rgb.reshape(-1, 3) / 255.0  # (200 * 200, 3)
 
-                        #     # 将点云和颜色信息保存为 PLY 文件
-                        #     pcd = o3d.geometry.PointCloud()
-                        #     pcd.points = o3d.utility.Vector3dVector(pcd_flat)  # 设置点云位置
-                        #     pcd.colors = o3d.utility.Vector3dVector(rgb_flat)  # 设置对应的颜色
-                        #     # o3d.io.write_point_cloud(save_path, pcd)
-                        #     o3d.visualization.draw_geometries([pcd])
-                        # test_pcd = np.concatenate((sample["3rd"]["pcd"], sample["wrist"]["pcd"]), axis=0)
-                        # test_rgb = np.concatenate((sample["3rd"]["rgb"], sample["wrist"]["rgb"]), axis=0)
-                        # vis_pcd(test_pcd, test_rgb)
+                            current_gripper_state = gripper_pose[step]["claw_status"]
+
+                            time = (1. - (step / float(num_steps - 1))) * 2. - 1.
+                            sample['low_dim_state'] = np.concatenate(
+                                [[current_gripper_state], [time]]).astype(np.float32)
                                 
-                                                
-                        with open(os.path.join(episode_path, f"instruction.pkl"), 'rb') as f:
-                            instruction = pickle.load(f)
+                            sample["ignore_collisions"] = 1.0
+                            
+                            sample["3rd"], sample["wrist"] = {}, {}
+                            if "3rd" in self.cameras:
+                                with open(os.path.join(rgb_3rd, f"{step}.pkl"), 'rb') as f:
+                                    sample["3rd"]["rgb"] = pickle.load(f)[:, :, :3]
+                                    # sample["3rd"]["rgb"] = joblib.load(f)[:, :, :3]
+                                    # sample["3rd"]["rgb"] = pickle.load(f, encoding='latin1')[:, :, :3]
+                                    sample["3rd"]["rgb"] = np.ascontiguousarray(sample["3rd"]["rgb"])  #   check it  the final image should be RGB
+                                    sample["3rd"]["rgb"] = np.transpose(sample["3rd"]["rgb"], [2, 0, 1])  # 转为（C,H,W）
+                                    rgb_data = sample["3rd"]["rgb"]
+                                    # rgb_data = np.transpose(sample["3rd"]["rgb"], (1, 2, 0))
+                                    # save_image_from_array(rgb_data, save_path='output_rgb.png')
+                                with open(os.path.join(pcd_3rd, f"{step}.pkl"), 'rb') as f:
+                                    sample["3rd"]["pcd"] = pickle.load(f)[:, :, :3]
+                                    # sample["3rd"]["pcd"] = joblib.load(f)[:, :, :3]  
+                                    sample["3rd"]["pcd"] = self.convert_pcd_to_base(pcd=sample["3rd"]["pcd"], type="3rd",extrinsic_path=os.path.join(episode_path, "extrinsic_matrix.pkl"))
+                                    sample["3rd"]["pcd"] = np.transpose(sample["3rd"]["pcd"], [2, 0, 1]).astype(np.float32)
+                                
+                            if "wrist"  in self.cameras:
+                                assert False
+                                with open(os.path.join(rgb_wrist, f"{step}.pkl"), 'rb') as f:
+                                    sample["wrist"]["rgb"] = pickle.load(f)
+                                    sample["wrist"]["rgb"] = np.ascontiguousarray(sample["wrist"]["rgb"][:, :, ::-1])  # BGR转RGB（H,W,C）
+                                    sample["wrist"]["rgb"] = np.transpose(sample["wrist"]["rgb"], [2, 0, 1])
+                                with open(os.path.join(pcd_wrist, f"{step}.pkl"), 'rb') as f:
+                                    sample["wrist"]["pcd"] = pickle.load(f)
+                                    sample["wrist"]["pcd"] = self.convert_pcd_to_base(pcd=sample["wrist"]["pcd"], type="wrist")
+                                    sample["wrist"]["pcd"] = np.transpose(sample["wrist"]["pcd"], [2, 0, 1])
+                            
+                            # import open3d as o3d
+                            # def vis_pcd(pcd, rgb):
+
+                            #     # 将点云和颜色转换为二维的形状 (N, 3)
+                            #     pcd_flat = pcd.reshape(-1, 3)  # (200 * 200, 3)
+                            #     rgb_flat = rgb.reshape(-1, 3) / 255.0  # (200 * 200, 3)
+
+                            #     # 将点云和颜色信息保存为 PLY 文件
+                            #     pcd = o3d.geometry.PointCloud()
+                            #     pcd.points = o3d.utility.Vector3dVector(pcd_flat)  # 设置点云位置
+                            #     pcd.colors = o3d.utility.Vector3dVector(rgb_flat)  # 设置对应的颜色
+                            #     # o3d.io.write_point_cloud(save_path, pcd)
+                            #     o3d.visualization.draw_geometries([pcd])
+                            # test_pcd = np.concatenate((sample["3rd"]["pcd"], sample["wrist"]["pcd"]), axis=0)
+                            # test_rgb = np.concatenate((sample["3rd"]["rgb"], sample["wrist"]["rgb"]), axis=0)
+                            # vis_pcd(test_pcd, test_rgb)
+                            
 
 
-                        sample["lang_goal"] = instruction.strip()
-                        
-                        sample["tasks"] = task
-                        
-                        # 如果启用output_arm_flag，则添加arm_flag到样本中
-                        if self.output_arm_flag:
-                            sample["arm_flag"] = gripper_pose[step+1]["arm_flag"]
-                        
-                        # 如果启用current_pose_input，则添加current_gripper_pose到样本中
-                        
-                        if self.dpo_dataset:
-                            # 为DPO数据集创建正例和多个负例
-                            # 正例保持原始的lang_goal
-                            positive_sample = copy.deepcopy(sample)
+                            with open(os.path.join(episode_path, f"instruction.pkl"), 'rb') as f:
+                                instruction = pickle.load(f)
+
+
+                            sample["lang_goal"] = instruction.strip()
                             
-                            # 负例：为每个其他不同的lang_goal创建一个负例
-                            current_lang_goal = sample["lang_goal"]
-                            available_lang_goals = [goal for goal in self.all_lang_goals if goal != current_lang_goal]
+                            sample["tasks"] = task
                             
-                            if available_lang_goals:
-                                # 为每个可用的其他lang_goal创建一个负例
-                                for negative_lang_goal in available_lang_goals:
+                            # 如果启用output_arm_flag，则添加arm_flag到样本中
+                            if self.output_arm_flag:
+                                sample["arm_flag"] = gripper_pose[step+1]["arm_flag"]
+                            
+                            # 如果启用current_pose_input，则添加current_gripper_pose到样本中
+                            
+                            if self.dpo_dataset:
+                                # 为DPO数据集创建正例和多个负例
+                                # 正例保持原始的lang_goal
+                                positive_sample = copy.deepcopy(sample)
+                                
+                                # 负例：为每个其他不同的lang_goal创建一个负例
+                                current_lang_goal = sample["lang_goal"]
+                                available_lang_goals = [goal for goal in self.all_lang_goals if goal != current_lang_goal]
+                                
+                                if available_lang_goals:
+                                    # 为每个可用的其他lang_goal创建一个负例
+                                    for negative_lang_goal in available_lang_goals:
+                                        negative_sample = copy.deepcopy(sample)
+                                        negative_sample["lang_goal"] = negative_lang_goal
+                                        
+                                        # 创建包含正例和负例的replay_sample
+                                        replay_sample = {
+                                            "positive": positive_sample,
+                                            "negative": negative_sample
+                                        }
+                                        
+                                        self.train_data.append(replay_sample)
+                                else:
+                                    # 如果没有其他lang_goal，使用一个默认的负例
+                                    negative_lang_goal = "这是一个错误的指令"
                                     negative_sample = copy.deepcopy(sample)
                                     negative_sample["lang_goal"] = negative_lang_goal
                                     
-                                    # 创建包含正例和负例的replay_sample
                                     replay_sample = {
                                         "positive": positive_sample,
                                         "negative": negative_sample
                                     }
                                     
+                                    if self.current_pose_input:
+                                        positive_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                        negative_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                        positive_sample['lang_goal'] = current_lang_goal + "，当前末端姿态为:" + str(positive_sample["current_gripper_pose"])
+                                        negative_sample['lang_goal'] = negative_lang_goal + "，当前末端姿态为:" + str(negative_sample["current_gripper_pose"])
+                                    
                                     self.train_data.append(replay_sample)
+
+                                    
                             else:
-                                # 如果没有其他lang_goal，使用一个默认的负例
-                                negative_lang_goal = "这是一个错误的指令"
-                                negative_sample = copy.deepcopy(sample)
-                                negative_sample["lang_goal"] = negative_lang_goal
-                                
-                                replay_sample = {
-                                    "positive": positive_sample,
-                                    "negative": negative_sample
-                                }
-                                
+                                # 原始模式，直接添加样本
+
                                 if self.current_pose_input:
-                                    positive_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
-                                    negative_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
-                                    positive_sample['lang_goal'] = current_lang_goal + "，当前末端姿态为:" + str(positive_sample["current_gripper_pose"])
-                                    negative_sample['lang_goal'] = negative_lang_goal + "，当前末端姿态为:" + str(negative_sample["current_gripper_pose"])
-                                
-                                self.train_data.append(replay_sample)
-
-                                
-                        else:
-                            # 原始模式，直接添加样本
-
-                            if self.current_pose_input:
-                                sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
-                                sample['lang_goal'] = sample['lang_goal'] + "，当前末端姿态为:" + str(sample["current_gripper_pose"])
-                            self.train_data.append(sample)           
+                                    sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                    sample['lang_goal'] = sample['lang_goal'] + "，当前末端姿态为:" + str(sample["current_gripper_pose"])
+                                self.train_data.append(sample)           
         gc.collect()
         torch.cuda.empty_cache()
         

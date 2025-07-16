@@ -311,6 +311,19 @@ class MVT(nn.Module):
         # print("The prompts:",prompts)
         images = [[MVT.trans_cuda_tensor_2_PIL(example)for example in examples] for examples in img]# bs,3
 
+        # from PIL import Image
+        # import numpy as np
+        # img = img.cpu().numpy()
+        # for i in range(3):
+        #     # if img[0,i,:,:,:].max() <= 1.0:
+        #     image = (img[0,i,:,:,:] * 255).astype(np.uint8)
+        #     # else:
+        #     # image = img[0,i,:,:,:].astype(np.uint8)
+        #     # image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        #     image = image.transpose(1, 2, 0)
+        #     pil_image = Image.fromarray(image)
+        #     pil_image.save(f"image_{i}.png")
+
 
         assert len(prompts)==len(images)
         model_inputs = self.processor(text=prompts, images=images, return_tensors="pt",padding="longest")
