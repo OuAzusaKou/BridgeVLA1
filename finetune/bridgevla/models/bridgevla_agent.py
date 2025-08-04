@@ -1260,6 +1260,19 @@ class RVTAgent:
             wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
         )
 
+
+        # 计算log概率
+        # total_log_probs = self._compute_log_probs(
+        #     q_trans, rot_q, grip_q, collision_q, action_trans,
+        #     action_rot_x_one_hot, action_rot_y_one_hot, action_rot_z_one_hot,
+        #     action_grip_one_hot, action_collision_one_hot
+        # )
+        # pos_log_probs = self._compute_log_probs(
+        #     pos_q_trans, pos_rot_q, pos_grip_q, pos_collision_q, pos_action_trans,
+        #     pos_action_rot_x_one_hot, pos_action_rot_y_one_hot, pos_action_rot_z_one_hot,
+        #     pos_action_grip_one_hot, pos_action_collision_one_hot, pos_arm_flag_q, pos_action_arm_flag_one_hot
+        # )
+        
         loss_log = {}
         if backprop:
             # 计算损失
@@ -1379,6 +1392,7 @@ class RVTAgent:
                     "rot_loss_z": rot_loss_z.item(),
                     "grip_loss": grip_loss.item(),
                     "collision_loss": collision_loss.item(),
+                    # "log_probs": total_log_probs.mean().item(),
                     "lr": self._optimizer.param_groups[0]["lr"],
                 }
             manage_loss_log(self, loss_log, reset_log=reset_log)
@@ -1579,7 +1593,7 @@ class RVTAgent:
         pos_obs, pos_pcd = real_utils._preprocess_inputs_real(positive_sample, cameras)
         
         with torch.no_grad():
-            pos_obs, pos_img_feat = rvt_utils.get_pc_img_feat(pos_obs, pos_pcd)
+            pos_pc, pos_img_feat = rvt_utils.get_pc_img_feat(pos_obs, pos_pcd)
             pos_pc = pos_pc.float()
             pos_img_feat = pos_img_feat.float()
             
@@ -1893,6 +1907,30 @@ class RVTAgent:
             # DPO损失公式: -log(sigmoid(beta * (log_p_w - log_p_l)))
             log_diff = pos_log_probs - neg_log_probs
             dpo_loss = -torch.log(torch.sigmoid(beta * log_diff)).mean()
+
+            # 计算熵loss，鼓励分布更尖锐（熵更低）
+            def entropy_loss(q):
+                q = torch.softmax(q, dim=-1)
+                q = torch.clamp(q, min=1e-8)
+                return -(q * torch.log(q)).sum(dim=-1).mean()
+
+            entropy_weight = 0.06  # 可调节
+            entropy_losses = [
+                entropy_loss(pos_q_trans),
+                entropy_loss(pos_rot_q),
+                entropy_loss(pos_grip_q),
+                entropy_loss(pos_collision_q),
+                entropy_loss(pos_action_trans),
+                entropy_loss(neg_q_trans),
+                entropy_loss(neg_rot_q),
+                entropy_loss(neg_grip_q),
+                entropy_loss(neg_collision_q),
+                entropy_loss(neg_action_trans),
+            ]
+            total_entropy_loss = sum(entropy_losses)
+
+            # 熵loss加到dpo_loss上
+            dpo_loss = dpo_loss + entropy_weight * total_entropy_loss
             
             # 计算KL散度损失（如果存在参考模型）
             kl_loss = 0.0

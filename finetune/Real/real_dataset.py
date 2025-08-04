@@ -88,6 +88,7 @@ class Real_Dataset(torch.utils.data.Dataset):
                 output_arm_flag=False,
                 dpo_dataset=False,
                 current_pose_input=False,
+                add_stop_token=False,  # 新增：是否添加截止符号
             ):
         self.device = device
         # 支持单个路径或路径列表
@@ -100,6 +101,7 @@ class Real_Dataset(torch.utils.data.Dataset):
         self.cameras=cameras
         self.output_arm_flag = output_arm_flag
         self.current_pose_input = current_pose_input
+        self.add_stop_token = add_stop_token  # 新增：截止符号标志
         self.all_lang_goals = []  # 存储所有不同的lang_goal
         print(f"You use {ep_per_task} episodes per task!")
         print(f"Data paths: {self.data_paths}")
@@ -111,6 +113,10 @@ class Real_Dataset(torch.utils.data.Dataset):
             print("Current pose input is enabled!")
         else:
             print("Current pose input is disabled!")
+        if self.add_stop_token:
+            print("Add stop token is enabled!")
+        else:
+            print("Add stop token is disabled!")
         time.sleep(5)
         self.construct_dataset(ep_per_task)
 
@@ -190,14 +196,14 @@ class Real_Dataset(torch.utils.data.Dataset):
 
                         num_steps = sum(1 for file_name in os.listdir(rgb_3rd) if file_name.endswith('.pkl')) 
                         # num_steps=5 # hardcode
-                        for step in range(num_steps-1):
+                        for step in range(num_steps - 1):
                             sample = {}
                             # Next pose action
                            
                             # sample["gripper_pose"] = np.concatenate((gripper_pose[step+1]["position"], gripper_pose[step+1]["orientation"]), axis=0)
                             # print("before:",sample["gripper_pose"][3:7])
                             # sample["gripper_pose"][3:7] = sample["gripper_pose"][[4, 5, 6, 3]] # x y z w 作为最终的输入
-                            
+
                             gripper_pose_xyz=np.array(gripper_pose[step+1]["position"])/1000 # mm -> m
                             gripper_pose_euler=gripper_pose[step+1]["orientation"]
                             gripper_pose_quat=R.from_euler('xyz', gripper_pose_euler, degrees=True).as_quat() # check it
@@ -276,6 +282,11 @@ class Real_Dataset(torch.utils.data.Dataset):
                             if self.output_arm_flag:
                                 sample["arm_flag"] = gripper_pose[step+1]["arm_flag"]
                             
+                            # 如果启用add_stop_token，则添加stop_token到样本中
+                            if self.add_stop_token:
+                                sample["stop_token"] = 0.0  # 添加截止符号标志
+                                
+                            
                             # 如果启用current_pose_input，则添加current_gripper_pose到样本中
                             
                             if self.dpo_dataset:
@@ -294,10 +305,18 @@ class Real_Dataset(torch.utils.data.Dataset):
                                         negative_sample["lang_goal"] = negative_lang_goal
                                         
                                         # 创建包含正例和负例的replay_sample
+                                        
+                                        if self.current_pose_input:
+                                            positive_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                            negative_sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                            positive_sample['lang_goal'] = current_lang_goal + "，当前末端姿态为:" + str(positive_sample["current_gripper_pose"])
+                                            negative_sample['lang_goal'] = negative_lang_goal + "，当前末端姿态为:" + str(negative_sample["current_gripper_pose"])
+                                    
                                         replay_sample = {
                                             "positive": positive_sample,
                                             "negative": negative_sample
                                         }
+
                                         
                                         self.train_data.append(replay_sample)
                                 else:
@@ -326,7 +345,107 @@ class Real_Dataset(torch.utils.data.Dataset):
                                 if self.current_pose_input:
                                     sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
                                     sample['lang_goal'] = sample['lang_goal'] + "，当前末端姿态为:" + str(sample["current_gripper_pose"])
-                                self.train_data.append(sample)           
+                                self.train_data.append(sample)
+
+                        if self.add_stop_token:
+
+                            sample = {}
+                            # Next pose action
+                            step = num_steps - 1
+                            # sample["gripper_pose"] = np.concatenate((gripper_pose[step+1]["position"], gripper_pose[step+1]["orientation"]), axis=0)
+                            # print("before:",sample["gripper_pose"][3:7])
+                            # sample["gripper_pose"][3:7] = sample["gripper_pose"][[4, 5, 6, 3]] # x y z w 作为最终的输入
+
+                            gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
+                            gripper_pose_euler=gripper_pose[step]["orientation"]
+                            gripper_pose_quat=R.from_euler('xyz', gripper_pose_euler, degrees=True).as_quat() # check it
+                            sample["gripper_pose"] = np.concatenate((gripper_pose_xyz, gripper_pose_quat,[gripper_pose[step+1]["claw_status"]]), axis=0)
+                            
+                            current_gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
+                            current_gripper_pose_euler=gripper_pose[step]["orientation"]
+                            current_gripper_pose_quat=R.from_euler('xyz', current_gripper_pose_euler, degrees=True).as_quat() 
+                            # sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+
+
+                            current_gripper_state = gripper_pose[step]["claw_status"]
+
+                            time = (1. - (step / float(num_steps - 1))) * 2. - 1.
+                            sample['low_dim_state'] = np.concatenate(
+                                [[current_gripper_state], [time]]).astype(np.float32)
+                                
+                            sample["ignore_collisions"] = 1.0
+                            
+                            sample["3rd"], sample["wrist"] = {}, {}
+                            if "3rd" in self.cameras:
+                                with open(os.path.join(rgb_3rd, f"{step}.pkl"), 'rb') as f:
+                                    sample["3rd"]["rgb"] = pickle.load(f)[:, :, :3]
+                                    # sample["3rd"]["rgb"] = joblib.load(f)[:, :, :3]
+                                    # sample["3rd"]["rgb"] = pickle.load(f, encoding='latin1')[:, :, :3]
+                                    sample["3rd"]["rgb"] = np.ascontiguousarray(sample["3rd"]["rgb"])  #   check it  the final image should be RGB
+                                    sample["3rd"]["rgb"] = np.transpose(sample["3rd"]["rgb"], [2, 0, 1])  # 转为（C,H,W）
+                                    rgb_data = sample["3rd"]["rgb"]
+                                    # rgb_data = np.transpose(sample["3rd"]["rgb"], (1, 2, 0))
+                                    # save_image_from_array(rgb_data, save_path='output_rgb.png')
+                                with open(os.path.join(pcd_3rd, f"{step}.pkl"), 'rb') as f:
+                                    sample["3rd"]["pcd"] = pickle.load(f)[:, :, :3]
+                                    # sample["3rd"]["pcd"] = joblib.load(f)[:, :, :3]  
+                                    sample["3rd"]["pcd"] = self.convert_pcd_to_base(pcd=sample["3rd"]["pcd"], type="3rd",extrinsic_path=os.path.join(episode_path, "extrinsic_matrix.pkl"))
+                                    sample["3rd"]["pcd"] = np.transpose(sample["3rd"]["pcd"], [2, 0, 1]).astype(np.float32)
+                                
+                            if "wrist"  in self.cameras:
+                                assert False
+                                with open(os.path.join(rgb_wrist, f"{step}.pkl"), 'rb') as f:
+                                    sample["wrist"]["rgb"] = pickle.load(f)
+                                    sample["wrist"]["rgb"] = np.ascontiguousarray(sample["wrist"]["rgb"][:, :, ::-1])  # BGR转RGB（H,W,C）
+                                    sample["wrist"]["rgb"] = np.transpose(sample["wrist"]["rgb"], [2, 0, 1])
+                                with open(os.path.join(pcd_wrist, f"{step}.pkl"), 'rb') as f:
+                                    sample["wrist"]["pcd"] = pickle.load(f)
+                                    sample["wrist"]["pcd"] = self.convert_pcd_to_base(pcd=sample["wrist"]["pcd"], type="wrist")
+                                    sample["wrist"]["pcd"] = np.transpose(sample["wrist"]["pcd"], [2, 0, 1])
+                            
+                            # import open3d as o3d
+                            # def vis_pcd(pcd, rgb):
+
+                            #     # 将点云和颜色转换为二维的形状 (N, 3)
+                            #     pcd_flat = pcd.reshape(-1, 3)  # (200 * 200, 3)
+                            #     rgb_flat = rgb.reshape(-1, 3) / 255.0  # (200 * 200, 3)
+
+                            #     # 将点云和颜色信息保存为 PLY 文件
+                            #     pcd = o3d.geometry.PointCloud()
+                            #     pcd.points = o3d.utility.Vector3dVector(pcd_flat)  # 设置点云位置
+                            #     pcd.colors = o3d.utility.Vector3dVector(rgb_flat)  # 设置对应的颜色
+                            #     # o3d.io.write_point_cloud(save_path, pcd)
+                            #     o3d.visualization.draw_geometries([pcd])
+                            # test_pcd = np.concatenate((sample["3rd"]["pcd"], sample["wrist"]["pcd"]), axis=0)
+                            # test_rgb = np.concatenate((sample["3rd"]["rgb"], sample["wrist"]["rgb"]), axis=0)
+                            # vis_pcd(test_pcd, test_rgb)
+                            
+
+
+                            with open(os.path.join(episode_path, f"instruction.pkl"), 'rb') as f:
+                                instruction = pickle.load(f)
+
+
+                            sample["lang_goal"] = instruction.strip()
+                            
+                            sample["tasks"] = task
+
+                            if self.output_arm_flag:
+                                sample["arm_flag"] = gripper_pose[step]["arm_flag"]
+                            
+                            # 如果启用add_stop_token，则添加stop_token到样本中
+                            
+                            sample["stop_token"] = 1.0  # 添加截止符号标志
+
+                            if self.current_pose_input:
+                                sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
+                                sample['lang_goal'] = sample['lang_goal'] + "，当前末端姿态为:" + str(sample["current_gripper_pose"])
+                                
+                            self.train_data.append(sample)
+
+
+
+                              
         gc.collect()
         torch.cuda.empty_cache()
         

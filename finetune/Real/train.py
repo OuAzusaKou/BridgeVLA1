@@ -50,7 +50,8 @@ from huggingface_hub import login
 import warnings
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from real_dataset import Real_Dataset
+from real_dataset import Real_Dataset as Real_Dataset
+# from pipline_real_dataset import Pipeline_RealDataset as Real_Dataset
 import datetime
 import torch
 
@@ -428,7 +429,7 @@ def experiment(cmd_args):
     t_start = time.time()
     
     # 创建完整数据集
-    full_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
+    full_dataset = Real_Dataset(data_folder, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input, add_stop_token=cmd_args.add_stop_token)
     print("Total tasks: ", full_dataset.num_tasks)
     print("Total trajectories: ", full_dataset.num_task_paths)
     print("Full Dataset Length: ", len(full_dataset))
@@ -437,7 +438,7 @@ def experiment(cmd_args):
     if cmd_args.test_split_ratio > 0:
         if test_data_folders:
             print("Warning: Both test_split_ratio and test_data_folder are specified. Using test_data_folder.")
-            test_dataset = Real_Dataset(test_data_folders, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
+            test_dataset = Real_Dataset(test_data_folders, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input, add_stop_token=cmd_args.add_stop_token)
             train_dataset = full_dataset
         else:
             # 计算分割点
@@ -458,7 +459,7 @@ def experiment(cmd_args):
         train_dataset = full_dataset
         test_dataset = None
         if test_data_folders:
-            test_dataset = Real_Dataset(test_data_folders, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input)
+            test_dataset = Real_Dataset(test_data_folders, device=device_id, cameras=cmd_args.cameras, ep_per_task=cmd_args.ep_per_task, output_arm_flag=cmd_args.output_arm_flag, dpo_dataset=cmd_args.update_dpo, current_pose_input=cmd_args.current_pose_input, add_stop_token=cmd_args.add_stop_token)
             print("Test Dataset Length: ", len(test_dataset))
 
     train_dataloader, train_sampler = create_dataloader(train_dataset, rank, world_size, BATCH_SIZE_TRAIN, exp_cfg.num_workers, use_distributed=True)
@@ -710,10 +711,11 @@ if __name__ == "__main__":
     parser.add_argument("--freeze_vision_tower", action="store_true")
     parser.add_argument("--load_pretrain", action="store_true")
     parser.add_argument("--add_proprio", action="store_true")
-    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--lr", type=float, default=8e-5)
     parser.add_argument("--pretrained_rlbench_dir", type=str, default=None)
     parser.add_argument("--pretrain_path", type=str, default=None)
     parser.add_argument("--output_arm_flag", action="store_true", default=False, help="是否输出机械臂flag")
+    parser.add_argument("--add_stop_token", action="store_true", default=False, help="是否添加截止符号")
     parser.add_argument(
         "--cameras",
         type=str,  # 每个值的类型

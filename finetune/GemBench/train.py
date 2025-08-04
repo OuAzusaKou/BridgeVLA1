@@ -399,7 +399,7 @@ if __name__ == "__main__":
     parser.add_argument("--mvt_cfg_opts", type=str, default="")
     parser.add_argument("--exp_cfg_opts", type=str, default="")
     parser.add_argument("--exp_note", type=str, default="")
-    parser.add_argument("--log_dir", type=str, default="/PATH_TO_SAVE_LOG/logs")
+    parser.add_argument("--log_dir", type=str, default="/home/wzh/BridgeVLA/finetune/GemBench/logs")
     parser.add_argument("--data_folder", type=str, default="/PATH_TO_TRAIN_DATA/train_dataset")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--ep_per_task", type=int, default=10000) # use all data
