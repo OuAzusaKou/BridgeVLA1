@@ -16,7 +16,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 
 import os
-# os.environ["WANDB_MODE"] = "offline"
+os.environ["WANDB_MODE"] = "offline"
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 
@@ -51,6 +51,7 @@ import warnings
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from real_dataset import Real_Dataset as Real_Dataset
+# from real_dataset_3view import Real_Dataset as Real_Dataset
 # from pipline_real_dataset import Pipeline_RealDataset as Real_Dataset
 import datetime
 import torch
@@ -497,6 +498,7 @@ def experiment(cmd_args):
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
         output_arm_flag=cmd_args.output_arm_flag,
+        output_stop_token=cmd_args.add_stop_token,
         **mvt_cfg,
     )
 
@@ -720,7 +722,7 @@ if __name__ == "__main__":
         "--cameras",
         type=str,  # 每个值的类型
         nargs="+",  # 接受一个或多个值
-        default=["3rd"],  # 默认值
+        default=CAMERAS_REAL,  # 默认值
         help="List of camera names"
     )
     parser.add_argument("--update_dpo", action="store_true",default=False, help="使用DPO训练模式")

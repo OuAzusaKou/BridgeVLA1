@@ -1,7 +1,7 @@
 exp_id: rvt2_vlm
 tasks: all
 bs: 4
-num_workers: 3
+num_workers: 4
 epochs: 500
 train_iter: 16000
 sample_distribution_mode: task_uniform
@@ -11,6 +11,8 @@ peract:
   optimizer_type: "adam"
   transform_augmentation_xyz: [0.125, 0.125, 0.125]
   transform_augmentation_rpy: [0.0, 0.0, 45.0]
+  # transform_augmentation_xyz: [0.0, 0.0, 0.0]
+  # transform_augmentation_rpy: [0.0, 0.0, 0.0]
 rvt:
   place_with_mean: False
   img_aug: 0.0

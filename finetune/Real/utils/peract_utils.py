@@ -15,15 +15,8 @@ from peract_colab.arm.utils import stack_on_channel
 # TODO: Unclear about the best way to handle them
 CAMERAS = ["front", "left_shoulder", "right_shoulder", "wrist"]
 CAMERAS_REAL = ["3rd"]
+# CAMERAS_REAL = ["net","usb1","usb2"]
 
-# SCENE_BOUNDS_real  = [
-#     -1.3,
-#     -1.5,
-#     -0.3,
-#     0.4,
-#     0.7,
-#     0.6,
-# ]
 SCENE_BOUNDS_real = [
     -1.1,
     -0.6,
@@ -40,6 +33,41 @@ SCENE_BOUNDS  = [
     0.5,
     0.6,
 ]
+
+# SCENE_BOUNDS_real = [
+#     -0.5,
+#     -0.1,
+#     -0.1,
+#     0.5,
+#     1,
+#     0.7,
+# ]
+# SCENE_BOUNDS  = [
+#     -0.5,
+#     -0.1,
+#     -0.1,
+#     0.5,
+#     1,
+#     0.7,
+# ]
+
+# SCENE_BOUNDS_real = [
+#     -0.5,
+#     -0.1,
+#     -0.1,
+#     0.5,
+#     1,
+#     0.7,
+# ]
+# SCENE_BOUNDS  = [
+#     -0.5,
+#     -0.1,
+#     -0.1,
+#     0.5,
+#     1,
+#     0.7,
+# ]
+
 IMAGE_SIZE = 128
 IMAGE_SIZE_GEM=256
 VOXEL_SIZES = [100]  # 100x100x100 voxels
@@ -87,6 +115,7 @@ def _preprocess_inputs_real(replay_sample, cameras):
             [rgb, pcd]
         )  # obs contains both rgb and pointcloud (used in ARM for other baselines)
         pcds.append(pcd)  # only pointcloud
+        
     return obs, pcds
 
 

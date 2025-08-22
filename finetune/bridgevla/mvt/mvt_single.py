@@ -62,6 +62,7 @@ class MVT(nn.Module):
         load_pretrain=False,
         pretrain_path=None,
         output_arm_flag=False,
+        output_stop_token=False,  # 新增：是否添加截止符号
     ):
         super().__init__()
         self.depth = depth
@@ -87,6 +88,7 @@ class MVT(nn.Module):
         self.num_rot = num_rot
         self.no_feat = no_feat
         self.output_arm_flag = output_arm_flag
+        self.output_stop_token = output_stop_token  # 新增：截止符号标志
 
         if self.cvx_up:
             assert not self.inp_pre_con, (
@@ -166,7 +168,7 @@ class MVT(nn.Module):
             feat_out_size = feat_dim
 
             if self.rot_ver == 0:
-                out_dim = feat_out_size + (2 if self.output_arm_flag else 0)
+                out_dim = feat_out_size + (2 if self.output_arm_flag else 0) + (2 if self.output_stop_token else 0)
                 self.feat_fc = get_feat_fc(
                     self.num_img * feat_fc_dim,
                     out_dim,
@@ -174,7 +176,7 @@ class MVT(nn.Module):
             elif self.rot_ver == 1:
                 assert self.num_rot * 3 <= feat_out_size
                 feat_out_size_ex_rot = feat_out_size - (self.num_rot * 3)
-                feat_out_size_ex_rot = feat_out_size_ex_rot + (2 if self.output_arm_flag else 0)
+                feat_out_size_ex_rot = feat_out_size_ex_rot + (2 if self.output_arm_flag else 0) + (2 if self.output_stop_token else 0)
                 if feat_out_size_ex_rot > 0:
                     self.feat_fc_ex_rot = get_feat_fc(
                         self.num_img * feat_fc_dim, feat_out_size_ex_rot

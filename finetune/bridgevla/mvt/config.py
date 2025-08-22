@@ -27,6 +27,7 @@ _C.xops = False
 _C.rot_ver = 0
 _C.num_rot = 72
 _C.stage_two = False
+# _C.st_sca = 3
 _C.st_sca = 4
 _C.st_wpt_loc_aug = 0.05
 _C.st_wpt_loc_inp_no_noise = False

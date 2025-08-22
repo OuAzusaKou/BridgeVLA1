@@ -251,6 +251,8 @@ class Real_Dataset(torch.utils.data.Dataset):
                                     sample["wrist"]["pcd"] = self.convert_pcd_to_base(pcd=sample["wrist"]["pcd"], type="wrist")
                                     sample["wrist"]["pcd"] = np.transpose(sample["wrist"]["pcd"], [2, 0, 1])
                             
+                            
+
                             # import open3d as o3d
                             # def vis_pcd(pcd, rgb):
 
@@ -284,7 +286,7 @@ class Real_Dataset(torch.utils.data.Dataset):
                             
                             # 如果启用add_stop_token，则添加stop_token到样本中
                             if self.add_stop_token:
-                                sample["stop_token"] = 0.0  # 添加截止符号标志
+                                sample["stop_token"] = 0  # 添加截止符号标志
                                 
                             
                             # 如果启用current_pose_input，则添加current_gripper_pose到样本中
@@ -359,7 +361,7 @@ class Real_Dataset(torch.utils.data.Dataset):
                             gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
                             gripper_pose_euler=gripper_pose[step]["orientation"]
                             gripper_pose_quat=R.from_euler('xyz', gripper_pose_euler, degrees=True).as_quat() # check it
-                            sample["gripper_pose"] = np.concatenate((gripper_pose_xyz, gripper_pose_quat,[gripper_pose[step+1]["claw_status"]]), axis=0)
+                            sample["gripper_pose"] = np.concatenate((gripper_pose_xyz, gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)
                             
                             current_gripper_pose_xyz=np.array(gripper_pose[step]["position"])/1000 # mm -> m
                             current_gripper_pose_euler=gripper_pose[step]["orientation"]
@@ -435,7 +437,7 @@ class Real_Dataset(torch.utils.data.Dataset):
                             
                             # 如果启用add_stop_token，则添加stop_token到样本中
                             
-                            sample["stop_token"] = 1.0  # 添加截止符号标志
+                            sample["stop_token"] = 1  # 添加截止符号标志
 
                             if self.current_pose_input:
                                 sample["current_gripper_pose"] = np.concatenate((current_gripper_pose_xyz, current_gripper_pose_quat,[gripper_pose[step]["claw_status"]]), axis=0)

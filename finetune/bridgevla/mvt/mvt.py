@@ -63,6 +63,7 @@ class MVT(nn.Module):
         load_pretrain=False,
         pretrain_path=None,
         output_arm_flag=False,
+        output_stop_token=False,
     ):
         super().__init__()
 
@@ -88,10 +89,11 @@ class MVT(nn.Module):
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
         self.output_arm_flag = output_arm_flag
-
+        self.output_stop_token = output_stop_token
         # for verifying the input
         self.feat_ver = feat_ver
         self.img_feat_dim = img_feat_dim
+
 
         self.renderer = BoxRenderer(
             device=renderer_device,

@@ -34,9 +34,11 @@ method:
   attn_dropout: 0.1
   decoder_dropout: 0.0
   crop_augmentation: true
+  # crop_augmentation: false
   final_dim: 64
   transform_augmentation:
     apply_se3: true
+    # apply_se3: false
     aug_xyz:
     - 0.125
     - 0.125
@@ -47,6 +49,7 @@ method:
     - 0.0
     aug_rot_resolution: 5
   demo_augmentation: true
+  # demo_augmentation: false
   demo_augmentation_every_n: 10
   no_skip_connection: false
   no_perceiver: false
