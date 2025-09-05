@@ -222,25 +222,28 @@ RLBENCH_TASKS = [
 ]
 
 
+# COLOSSEUM_TASKS = [
+#     "basketball_in_hoop",
+#     "close_box",
+#     "empty_dishwasher",
+#     "get_ice_from_fridge",
+#     "hockey",
+#     "meat_on_grill",
+#     "move_hanger",
+#     "wipe_desk",
+#     "open_drawer",
+#     "slide_block_to_target",
+#     "reach_and_drag",
+#     "put_money_in_safe",
+#     "place_wine_at_rack_location",
+#     "insert_onto_square_peg",
+#     "turn_oven_on",
+#     "straighten_rope",
+#     "setup_chess",
+#     "scoop_with_spatula",
+#     "close_laptop_lid",
+#     "stack_cups",
+# ]
 COLOSSEUM_TASKS = [
-    "basketball_in_hoop",
-    "close_box",
-    "empty_dishwasher",
-    "get_ice_from_fridge",
-    "hockey",
-    "meat_on_grill",
-    "move_hanger",
-    "wipe_desk",
-    "open_drawer",
-    "slide_block_to_target",
-    "reach_and_drag",
-    "put_money_in_safe",
-    "place_wine_at_rack_location",
-    "insert_onto_square_peg",
-    "turn_oven_on",
-    "straighten_rope",
-    "setup_chess",
-    "scoop_with_spatula",
-    "close_laptop_lid",
-    "stack_cups",
+    "close_box"
 ]

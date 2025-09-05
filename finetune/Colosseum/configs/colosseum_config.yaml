@@ -1,7 +1,7 @@
 exp_id: debug
 tasks: all
 bs: 4
-num_workers: 3
+num_workers: 2
 epochs: 100
 train_iter: 160000
 sample_distribution_mode: task_uniform

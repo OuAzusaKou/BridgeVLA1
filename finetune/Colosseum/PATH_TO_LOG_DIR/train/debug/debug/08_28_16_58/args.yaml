@@ -1,0 +1,13 @@
+debug: false
+entry: !!python/name:__main__.%3Clambda%3E ''
+epochs: 100
+exp_cfg_opts: ''
+exp_cfg_path: configs/colosseum_config.yaml
+exp_note: debug
+freeze_vision_tower: true
+load_pretrain: true
+log_dir: PATH_TO_LOG_DIR
+mvt_cfg_opts: ''
+mvt_cfg_path: ../bridgevla/mvt/configs/rvt2.yaml
+pretrain_path: /home/BridgeVLA/pretrained_ckpt/pretrain/one_image_layer1_pretrain_3824
+refresh_replay: false

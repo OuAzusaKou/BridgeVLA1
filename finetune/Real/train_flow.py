@@ -16,7 +16,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 
 import os
-# os.environ["WANDB_MODE"] = "offline"
+os.environ["WANDB_MODE"] = "offline"
 # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 
@@ -30,10 +30,10 @@ import sys
 sys.path.append('/home/wzh/BridgeVLA/finetune/')
 print('sys.path:',sys.path)
 import bridgevla.config as exp_cfg_mod
-import bridgevla.models.bridgevla_agent as bridgevla_agent
+import bridgevla.models.bridgevla_agent_with_flow as bridgevla_agent
 import bridgevla.mvt.config as mvt_cfg_mod
 
-from bridgevla.mvt.mvt import MVT
+from bridgevla.mvt.mvt_with_hidden import MVT
 from bridgevla.models.bridgevla_agent import print_eval_log, print_loss_log
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
@@ -53,10 +53,20 @@ from torch.utils.data.distributed import DistributedSampler
 from real_dataset import Real_Dataset as Real_Dataset
 # from real_dataset_3view import Real_Dataset as Real_Dataset
 # from pipline_real_dataset import Pipeline_RealDataset as Real_Dataset
-from pipline_real_dataset_dpo_nextstep import Pipeline_RealDataset as Real_Dataset
-
+# from pipline_real_dataset_dpo_nextstep import Pipeline_RealDataset as Real_Dataset
+from real_dataset_flow import Real_Dataset as Real_Dataset
 import datetime
 import torch
+
+
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.configs.policies import PreTrainedConfig
+
+
+from lerobot.common.policies.pi0.configuration_pi0 import PI0Config
+from lerobot.common.policies.pretrained import PreTrainedPolicy
+
+from bridgevla.mvt.gemma_expert import GemmaExpertModel
 
 # torch.autograd.set_detect_anomaly(True)
 def find_free_port():
@@ -510,6 +520,36 @@ def experiment(cmd_args):
         device_ids=[local_rank],
         find_unused_parameters=True,
     )
+
+    expert_flow_path = "/home/lpy/.cache/huggingface/hub/models--lerobot--pi0/snapshots/8f50aacbe079a026391616cf22453de528f2a873/"
+        
+
+
+    if expert_flow_path is not None:
+        from transformers import (
+            PaliGemmaProcessor,
+            GemmaForCausalLM,
+        )
+
+        flow_config = PreTrainedConfig.from_pretrained(
+            expert_flow_path
+        )
+        flow_config.device = "cpu"
+        flow_config.freeze_vision_encoder = True
+        flow_config.train_expert_only = True
+        flow_config.train_state_proj = True
+
+
+
+
+
+    gemma_expert = GemmaExpertModel(config=flow_config)
+    gemma_expert = gemma_expert.to(device_id)
+    gemma_expert = DDP(
+        gemma_expert,
+        device_ids=[local_rank],
+        find_unused_parameters=True,
+    )
     
     agent = bridgevla_agent.RVTAgent(
         network=backbone,
@@ -520,6 +560,7 @@ def experiment(cmd_args):
         scene_bounds=SCENE_BOUNDS_real,
         cameras=CAMERAS_REAL,
         log_dir=f"{log_dir}/test_run/",
+        gemma_expert= gemma_expert,
         # cos_dec_max_step=EPOCHS * len(train_dataloader),
         # use_scheduler=exp_cfg.use_scheduler,
         **exp_cfg.peract,
@@ -556,6 +597,7 @@ def experiment(cmd_args):
     #     print(f"Recovering model and checkpoint from {exp_cfg.resume}")
     #     epoch = load_agent(agent_path, agent, only_epoch=False)
     #     start_epoch = epoch + 1
+    
     dist.barrier()
 
     if dist.get_rank() == 0:
@@ -590,7 +632,7 @@ def experiment(cmd_args):
             test_sampler.set_epoch(i)
 
         print(f"Rank [{dist.get_rank()}], Epoch [{i}]: Training on train dataset")
-        dist.barrier()
+        # dist.barrier()
         train_losses = train(agent, train_dataloader, rank=dist.get_rank(), cameras=cmd_args.cameras, update_dpo=cmd_args.update_dpo, dpo_beta=cmd_args.dpo_beta)
         
         # 确保所有进程同步

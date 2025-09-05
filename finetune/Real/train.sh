@@ -20,10 +20,10 @@ echo "所有传入的参数：$@"
 #             --master_port 12345 \
 #             train_torchrun_real.py \
 #             $@ 
-export CUDA_VISIBLE_DEVICES=3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
 export TORCH_SHOW_CPP_STACKTRACES=1
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
-torchrun --nnodes=1 --node_rank=0 --master_port 15558 --nproc_per_node=5 train.py $@ 
+torchrun --nnodes=1 --node_rank=0 --master_port 15558 --nproc_per_node=7 train.py $@ 
 
 
 

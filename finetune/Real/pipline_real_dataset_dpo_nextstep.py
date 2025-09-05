@@ -20,7 +20,8 @@ class Pipeline_RealDataset(Dataset):
                  ep_per_task=10, 
                  output_arm_flag=False, 
                  dpo_dataset=False, 
-                 current_pose_input=False):
+                 current_pose_input=False,
+                 add_stop_token=False):
         super().__init__()
         self.data_paths = data_paths if isinstance(data_paths, list) else [data_paths]
         self.cameras = cameras
@@ -103,6 +104,7 @@ class Pipeline_RealDataset(Dataset):
                                 "task": task,
                                 "episode_path": episode_path,
                                 "step": step,
+                                "episode_length":num_steps
                             }
                             if self.dpo_dataset:
                                 # 记录正例lang_goal
@@ -121,6 +123,7 @@ class Pipeline_RealDataset(Dataset):
     def __getitem__(self, idx):
         info = self.index_list[idx]
         episode_path = info["episode_path"]
+        episode_length = info['episode_length']
         step = info["step"]
         task = info["task"]
 
@@ -200,8 +203,18 @@ class Pipeline_RealDataset(Dataset):
             else:
                 negative_lang_goal = "这是一个错误的指令"
             negative_sample = copy.deepcopy(sample)
-            negative_sample["lang_goal"] = negative_lang_goal
             
+
+            if step < episode_length - 2:
+
+                next_gripper_pose_xyz = np.array(gripper_pose[step+2]["position"]) / 1000
+                next_gripper_pose_euler = gripper_pose[step+2]["orientation"]
+                next_gripper_pose_quat = R.from_euler('xyz', next_gripper_pose_euler, degrees=True).as_quat()
+                next_gripper_pose_vec = np.concatenate((next_gripper_pose_xyz, next_gripper_pose_quat, [gripper_pose[step+2]["claw_status"]]), axis=0)
+                negative_sample['gripper_pose'] = next_gripper_pose_vec
+                negative_sample["lang_goal"] = lang_goal
+            else:
+                negative_sample["lang_goal"] = negative_lang_goal
             # current_pose_input
             if self.current_pose_input:
                 positive_sample["current_gripper_pose"] = current_gripper_pose_vec

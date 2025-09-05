@@ -1,0 +1,32 @@
+agent: our
+bs: 2
+epochs: 100
+exp_id: debug
+num_workers: 2
+peract:
+  add_rgc_loss: true
+  lambda_weight_l2: 1.0e-06
+  lr: 8.0e-05
+  num_rotation_classes: 72
+  optimizer_type: adam
+  transform_augmentation: true
+  transform_augmentation_rpy:
+  - 0.0
+  - 0.0
+  - 45.0
+  transform_augmentation_xyz:
+  - 0.125
+  - 0.125
+  - 0.125
+peract_official:
+  cfg_path: configs/peract_official_config.yaml
+rvt:
+  gt_hm_sigma: 1.5
+  img_aug: 0.0
+  move_pc_in_bound: true
+  place_with_mean: false
+sample_distribution_mode: task_uniform
+tasks: all
+train_iter: 160000
+use_scheduler: true
+

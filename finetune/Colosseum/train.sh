@@ -1,4 +1,4 @@
-cd /PATH_TO_BRIDGEVLA/finetune
+cd /home/wzh/BridgeVLA/finetune/
 
 export COPPELIASIM_ROOT=$(pwd)/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
@@ -7,8 +7,10 @@ export DISPLAY=:1.0
 
 cd Colosseum
 
+export CUDA_VISIBLE_DEVICES=6,7
+
 port=15559
-GPUS_PER_NODE=4
+GPUS_PER_NODE=2
 NNODES=1
 torchrun \
     --nnodes=$NNODES \

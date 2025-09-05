@@ -40,6 +40,8 @@ import numpy as np
 import os
 
 
+
+
 def save_point_cloud_with_color(filename, points, colors, keypoint=None):
     """
     Save the point cloud and colors to a PLY file, automatically handling the color value range.
@@ -393,6 +395,24 @@ def print_loss_log(agent):
     return out
 
 
+from typing import List, Optional, Union
+
+import torch
+from pytest import Cache
+from transformers import (
+    AutoConfig,
+    GemmaForCausalLM,
+    PaliGemmaForConditionalGeneration,
+    PretrainedConfig,
+    PreTrainedModel,
+)
+from transformers.models.auto import CONFIG_MAPPING
+
+# from .utils import apply_rope, eager_attention_forward
+
+
+
+
 class RVTAgent:
     def __init__(
         self,
@@ -417,6 +437,8 @@ class RVTAgent:
         rot_ver: int = 0,
         rot_x_y_aug: int = 2,
         log_dir="",
+        gemma_expert=None,
+        expert_flow_path="/home/lpy/.cache/huggingface/hub/models--lerobot--pi0/snapshots/8f50aacbe079a026391616cf22453de528f2a873/",
     ):
         self._network = network
         self._num_rotation_classes = num_rotation_classes
@@ -441,6 +463,8 @@ class RVTAgent:
         self.log_dir = log_dir
         self.scene_bounds = scene_bounds
         self.cameras = cameras
+        self.gemma_expert = gemma_expert
+            # Remove unused embed_tokens
 
         print("Cameras:",self.cameras)
         self.move_pc_in_bound = move_pc_in_bound
@@ -1289,6 +1313,9 @@ class RVTAgent:
             rot_x_y=rot_x_y if self.rot_ver == 1 else None,
             language_goal=replay_sample["lang_goal"]  
         )
+
+        
+
         mvt1_img=out["mvt1_ori_img"][0,:,3:6]
         # visualize mvt1_img
         # visualize_images_2(mvt1_img,mvt1_img,save_dir="/mnt/data1/3D_VLA/BridgeVLA/rvt_our/test_ori.png")
@@ -1336,10 +1363,30 @@ class RVTAgent:
         if backprop:
             # 计算损失
             # cross-entropy loss
+            action_rot_euler = aug_utils.quaternion_to_euler(action_rot)
+            state = replay_sample["current_gripper_pose"]
+            bsize = state.shape[0]
+            prefix_len = out['past_key_values'][0][0].shape[2]
+            device = state.device
+            att_masks = torch.zeros(
+            (bsize, prefix_len), device=device, dtype=torch.bool
+            )
+
+            # action_gripper_pose
+            flow_actions_label = replay_sample["internal_gripper_pose"]
+            # b,l,dim
+            flow_loss = self.gemma_expert.module.loss_compute(out['past_key_values'],
+                            prefix_pad_masks=att_masks,
+                            prefix_att_masks=att_masks,
+                            state=state,
+                            actions=flow_actions_label)
+
             trans_loss = self._cross_entropy_loss(q_trans, action_trans).mean()   #  软标签交叉熵损失，target与输入的形状相同，且不再采用one-hot编码，而是用一个class probabilities来表示
             rot_loss_x = rot_loss_y = rot_loss_z = 0.0
             grip_loss = 0.0
             collision_loss = 0.0
+
+
             if self.add_rgc_loss:
                 
                 rot_loss_x = self._cross_entropy_loss(
@@ -1415,6 +1462,7 @@ class RVTAgent:
                     + rot_loss_z
                     + grip_loss
                     + collision_loss
+                    + flow_loss
                 )
             # total_loss=trans_loss
 
@@ -1477,6 +1525,7 @@ class RVTAgent:
                     "rot_loss_z": rot_loss_z.item(),
                     "grip_loss": grip_loss.item(),
                     "collision_loss": collision_loss.item(),
+                    "flow_loss": flow_loss.item(),
                     # "log_probs": total_log_probs.mean().item(),
                     "lr": self._optimizer.param_groups[0]["lr"],
                 }
@@ -1484,7 +1533,7 @@ class RVTAgent:
             return_out.update(loss_log)
         # to do: eval loss flag
         # 当backprop=False且eval_log=True时，计算损失但不进行反向传播
-        if (not backprop) and eval_log:
+        if not backprop and eval_log:
             with torch.no_grad():
                 # 计算损失
                 trans_loss = self._cross_entropy_loss(q_trans, action_trans).mean()
@@ -1652,7 +1701,7 @@ class RVTAgent:
     def dpo_update_real(
         self,
         replay_sample: dict,
-        beta: float = 0.05,  # DPO温度参数
+        beta: float = 0.1,  # DPO温度参数
         backprop: bool = True,
         eval_log: bool = False,
         reset_log: bool = False,
@@ -2016,7 +2065,7 @@ class RVTAgent:
                 q = torch.clamp(q, min=1e-8)
                 return -(q * torch.log(q)).sum(dim=-1).mean()
 
-            entropy_weight = 0  # 可调节
+            entropy_weight = 0.06  # 可调节
             entropy_losses = [
                 entropy_loss(pos_q_trans),
                 entropy_loss(pos_rot_q),
@@ -2077,7 +2126,7 @@ class RVTAgent:
                 total_loss = (
                     dpo_loss + 
                     0.1 * kl_loss +  # KL散度权重
-                    1.0 * (pos_trans_loss + pos_rot_loss_x + pos_rot_loss_y + pos_rot_loss_z + 
+                    0.5 * (pos_trans_loss + pos_rot_loss_x + pos_rot_loss_y + pos_rot_loss_z + 
                            pos_grip_loss + pos_collision_loss + pos_arm_flag_loss)
                 )
             else:
