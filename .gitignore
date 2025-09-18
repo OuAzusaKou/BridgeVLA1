@@ -184,5 +184,3 @@ wandb/
 nohup.out
 *.out 
 
-# libs
-libs
