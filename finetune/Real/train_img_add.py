@@ -30,10 +30,10 @@ import sys
 sys.path.append('/home/wzh/BridgeVLA/finetune/')
 print('sys.path:',sys.path)
 import bridgevla.config as exp_cfg_mod
-import bridgevla.models.bridgevla_agent as bridgevla_agent
+import bridgevla.models.bridgevla_agent_img_add as bridgevla_agent
 import bridgevla.mvt.config as mvt_cfg_mod
 
-from bridgevla.mvt.mvt import MVT
+from bridgevla.mvt.mvt_img_add import MVT
 from bridgevla.models.bridgevla_agent import print_eval_log, print_loss_log
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
@@ -53,7 +53,8 @@ from torch.utils.data.distributed import DistributedSampler
 from real_dataset import Real_Dataset as Real_Dataset
 # from real_dataset_3view import Real_Dataset as Real_Dataset
 # from pipline_real_dataset import Pipeline_RealDataset as Real_Dataset
-from pipline_real_dataset_dpo_nextstep import Pipeline_RealDataset as Real_Dataset
+# from pipline_real_dataset_dpo_nextstep import Pipeline_RealDataset as Real_Dataset
+from real_dataset_img_add import Real_Dataset as Real_Dataset
 
 import datetime
 import torch
@@ -406,10 +407,7 @@ def experiment(cmd_args):
 
     if local_rank == 0:
         print(f"dict(exp_cfg)={dict(exp_cfg)}")
-
     exp_cfg.peract.transform_augmentation=True 
-    # exp_cfg.peract.transform_augmentation=False
-    
     exp_cfg.freeze()
 
     BATCH_SIZE_TRAIN = exp_cfg.bs
@@ -658,7 +656,7 @@ def experiment(cmd_args):
         else:
             if dist.get_rank() == 0:
                 wandb.log(train_losses, step=i)
-                if i % 100 == 0 or i == end_epoch-1:
+                if i % 50 == 0 or i == end_epoch-1:
                     save_agent(agent, f"{log_dir}/model_{i}.pth", i)
                     save_agent(agent, f"{log_dir}/model_last.pth", i)
         
